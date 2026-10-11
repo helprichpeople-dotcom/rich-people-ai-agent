@@ -11,18 +11,18 @@
     "test:grok": "tsx src/test-grok.ts"
   },
   "dependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.17.10",
     "dotenv": "^16.4.5",
     "express": "^5.3.0",
     "googleapis": "^144.0.0",
-    "openai": "^4.77.0"
-  },
-  "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/node": "^20.17.10",
-    "tsx": "^4.19.2",
+    "openai": "^4.77.0",
     "typescript": "^5.7.2"
   },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  },
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   }
 }
