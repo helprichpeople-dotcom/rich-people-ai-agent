@@ -1,0 +1,28 @@
+{
+  "name": "rich-people-ai-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "test:sheets": "tsx src/test-sheets.ts",
+    "test:grok": "tsx src/test-grok.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^5.3.0",
+    "googleapis": "^144.0.0",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.17.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

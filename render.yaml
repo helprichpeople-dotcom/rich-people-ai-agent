@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: rich-people-ai-agent
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
