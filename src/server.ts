@@ -1,5 +1,6 @@
 import express from "express";
 import { handleMessengerEvent, verifyWebhook } from "./messenger/webhook.js";
+import { handleWhatsAppEvent, verifyWhatsAppWebhook } from "./whatsapp/webhook.js";
 import { dataDeletion, privacyPolicy, terms } from "./legal.js";
 
 const app = express();
@@ -14,6 +15,11 @@ app.use(
 app.get("/webhook/messenger", verifyWebhook);
 app.post("/webhook/messenger", (req, res) => {
   void handleMessengerEvent(req, res);
+});
+
+app.get("/webhook/whatsapp", verifyWhatsAppWebhook);
+app.post("/webhook/whatsapp", (req, res) => {
+  void handleWhatsAppEvent(req, res);
 });
 
 app.get("/privacy", privacyPolicy);

@@ -25,3 +25,14 @@ npm run build
 ```
 
 `npm run test:sheets` এখন ব্যর্থ হবে যতক্ষণ না Google Service Account JSON বসানো হয় — সেটা পরবর্তী ছোট ধাপে করব।
+
+## WhatsApp (Cloud API)
+
+Webhook: `GET/POST /webhook/whatsapp` (Meta callback: `https://rich-people-ai-agent.onrender.com/webhook/whatsapp`, field `messages`).
+
+Env (set in `.env` locally and in Render; never commit):
+- `WHATSAPP_ACCESS_TOKEN` – Cloud API token
+- `WHATSAPP_PHONE_NUMBER_ID` – sender phone number ID
+- `WHATSAPP_BUSINESS_ACCOUNT_ID` – WABA ID (reference)
+- `WHATSAPP_VERIFY_TOKEN` – optional; falls back to `MESSENGER_VERIFY_TOKEN`
+- `WHATSAPP_APP_SECRET` – optional; falls back to `MESSENGER_APP_SECRET` (same Meta app)
