@@ -1,5 +1,6 @@
 import express from "express";
 import { handleMessengerEvent, verifyWebhook } from "./messenger/webhook.js";
+import { dataDeletion, privacyPolicy, terms } from "./legal.js";
 
 const app = express();
 app.use(
@@ -14,6 +15,12 @@ app.get("/webhook/messenger", verifyWebhook);
 app.post("/webhook/messenger", (req, res) => {
   void handleMessengerEvent(req, res);
 });
+
+app.get("/privacy", privacyPolicy);
+app.get("/privacy-policy", privacyPolicy);
+app.get("/data-deletion", dataDeletion);
+app.get("/terms", terms);
+app.get("/", (_req, res) => res.redirect("/privacy"));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
