@@ -36,3 +36,10 @@ Env (set in `.env` locally and in Render; never commit):
 - `WHATSAPP_BUSINESS_ACCOUNT_ID` – WABA ID (reference)
 - `WHATSAPP_VERIFY_TOKEN` – optional; falls back to `MESSENGER_VERIFY_TOKEN`
 - `WHATSAPP_APP_SECRET` – optional; falls back to `MESSENGER_APP_SECRET` (same Meta app)
+
+## Inbound customer images (Messenger + WhatsApp)
+When a customer sends a photo (no text), the bot fetches it (Messenger: attachment `payload.url`; WhatsApp: Graph media id → url → bytes with bearer token), computes SHA-256 and compares with SHA-256 of each active product's `image_url` (downloaded on demand, cached in memory 6h). Messenger also matches if the attachment URL equals a product `image_url`.
+- Match → reply with name, price, stock, offer, product link, and send the product image (if `MEDIA_SEND_ENABLED=true`).
+- No match → "couldn't identify" + real product list with links. Never invents products.
+- Limitation: exact-bytes only. Recompressed/cropped/screenshot/camera photos won't match (Meta usually recompresses), so the fallback is common. Image+text messages go through the normal text AI path.
+- Tests: `npm run test:image` (mock only).

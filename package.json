@@ -9,7 +9,8 @@
     "dev": "tsx src/server.ts",
     "test:sheets": "tsx src/test-sheets.ts",
     "test:grok": "tsx src/test-grok.ts",
-    "test:media": "tsx src/test-media.ts"
+    "test:media": "tsx src/test-media.ts",
+    "test:image": "tsx src/test-image-match.ts"
   },
   "dependencies": {
     "@types/express": "^5.0.6",

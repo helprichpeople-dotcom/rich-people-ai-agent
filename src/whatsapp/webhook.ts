@@ -3,6 +3,8 @@ import type { Request, Response } from "express";
 import { askGrokWithMedia } from "../ai/grok.js";
 import { config } from "../config.js";
 import { deliverProductMedia } from "../media/deliver.js";
+import { fetchImageBytes, handleInboundImage } from "../media/match.js";
+import type { FetchFn } from "../media/validate.js";
 import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
 import { loadSettings } from "../sheets/settings.js";
@@ -96,6 +98,7 @@ type WaMessage = {
   id?: string;
   type?: string;
   text?: { body?: string };
+  image?: { id?: string; caption?: string; mime_type?: string };
   button?: { text?: string };
   interactive?: {
     button_reply?: { title?: string };
@@ -150,6 +153,11 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
         }
         const text = extractText(m);
         try {
+          if (m.type === "image" && m.image?.id) {
+            if (isHandedOff(`whatsapp:${from}`)) continue;
+            await handleWhatsAppImage(phoneNumberId, from, m.image.id);
+            continue;
+          }
           if (!text) {
             await sendWhatsAppText(
               phoneNumberId,
@@ -189,4 +197,42 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
       }
     }
   }
+}
+
+/** Download WhatsApp media by id (2-step Graph: id -> url -> bytes, both with bearer). */
+export async function downloadWhatsAppMedia(mediaId: string, fetchFn: FetchFn = fetch as FetchFn): Promise<Uint8Array | null> {
+  if (!ACCESS_TOKEN) return null;
+  const auth = { Authorization: `Bearer ${ACCESS_TOKEN}` };
+  try {
+    const r = await fetchFn(`https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(mediaId)}`, { headers: auth });
+    if (!r.ok) return null;
+    const meta = (await r.json()) as { url?: string };
+    if (!meta.url) return null;
+    return await fetchImageBytes(meta.url, fetchFn, auth);
+  } catch {
+    return null;
+  }
+}
+
+export async function handleWhatsAppImage(
+  phoneNumberId: string,
+  from: string,
+  mediaId: string,
+  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string, c: string) => Promise<void>; products?: Awaited<ReturnType<typeof loadProducts>> } = {}
+) {
+  const products = deps.products ?? (await loadProducts());
+  const bytes = await downloadWhatsAppMedia(mediaId, deps.fetchFn);
+  const result = await handleInboundImage({ bytes, products, fetchFn: deps.fetchFn });
+  console.log(`[image-in] whatsapp:${from} matched=${result.product?.product_id || "none"}`);
+  await (deps.sendText ?? ((t) => sendWhatsAppText(phoneNumberId, from, t)))(result.text);
+  if (result.product) {
+    await deliverProductMedia({
+      media: [{ type: "product_image", product_id: result.product.product_id }],
+      products,
+      enabled: config.mediaSendEnabled,
+      fetchFn: deps.fetchFn,
+      sendImage: deps.sendImage ?? ((u, c) => sendWhatsAppImage(phoneNumberId, from, u, c)),
+    });
+  }
+  return result;
 }

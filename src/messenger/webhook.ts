@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { askGrokWithMedia } from "../ai/grok.js";
 import { config } from "../config.js";
 import { deliverProductMedia } from "../media/deliver.js";
+import { fetchImageBytes, handleInboundImage } from "../media/match.js";
 import type { FetchFn } from "../media/validate.js";
 import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
@@ -85,7 +86,7 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
     entry?: Array<{
       messaging?: Array<{
         sender?: { id?: string };
-        message?: { text?: string; is_echo?: boolean };
+        message?: { text?: string; is_echo?: boolean; attachments?: Array<{ type?: string; payload?: { url?: string } }> };
       }>;
     }>;
   };
@@ -95,7 +96,18 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
     for (const event of entry.messaging || []) {
       const psid = event.sender?.id;
       const text = event.message?.text;
-      if (!psid || !text || event.message?.is_echo) continue;
+      if (!psid || event.message?.is_echo) continue;
+      const img = (event.message?.attachments || []).find((a) => a.type === "image" && a.payload?.url);
+      if (img && !text) {
+        try {
+          if (isHandedOff(`messenger:${psid}`)) continue;
+          await handleMessengerImage(psid, img.payload!.url!);
+        } catch (err) {
+          console.error("Messenger image handle error:", err);
+        }
+        continue;
+      }
+      if (!text) continue;
       try {
         const [products, settings] = await Promise.all([loadProducts(), loadSettings()]);
         if (isHandedOff(`messenger:${psid}`)) {
@@ -123,4 +135,27 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
       }
     }
   }
+}
+
+/** Inbound image: match against Products and reply (and send product image if enabled). */
+export async function handleMessengerImage(
+  psid: string,
+  imageUrl: string,
+  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string) => Promise<void>; products?: Awaited<ReturnType<typeof loadProducts>> } = {}
+) {
+  const products = deps.products ?? (await loadProducts());
+  const bytes = await fetchImageBytes(imageUrl, deps.fetchFn);
+  const result = await handleInboundImage({ bytes, sourceUrl: imageUrl, products, fetchFn: deps.fetchFn });
+  console.log(`[image-in] messenger:${psid} matched=${result.product?.product_id || "none"}`);
+  await (deps.sendText ?? ((t) => sendMessengerText(psid, t)))(result.text);
+  if (result.product) {
+    await deliverProductMedia({
+      media: [{ type: "product_image", product_id: result.product.product_id }],
+      products,
+      enabled: config.mediaSendEnabled,
+      fetchFn: deps.fetchFn,
+      sendImage: deps.sendImage ?? ((u) => sendMessengerImage(psid, u)),
+    });
+  }
+  return result;
 }
