@@ -10,7 +10,8 @@
     "test:sheets": "tsx src/test-sheets.ts",
     "test:grok": "tsx src/test-grok.ts",
     "test:media": "tsx src/test-media.ts",
-    "test:image": "tsx src/test-image-match.ts"
+    "test:image": "tsx src/test-image-match.ts",
+    "test:handoff": "tsx src/test-handoff.ts"
   },
   "dependencies": {
     "@types/express": "^5.0.6",

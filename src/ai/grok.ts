@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { assertGrokConfig, config } from "../config.js";
 import type { Product, SettingMap } from "../types/catalog.js";
 import { createOrder } from "../sheets/orders.js";
-import { requestHuman } from "../support/handoff.js";
+import { requestHuman, humanSupportReply, resolveWhatsAppContact } from "../support/handoff.js";
 import { validateImageUrl, validateProductUrl } from "../media/validate.js";
 import { getHistory, pushHistory, clearHistory } from "../memory.js";
 
@@ -123,7 +123,7 @@ export async function askGrokWithMedia(params: AskParams): Promise<GrokReply> {
 2) বাংলা বা ইংরেজিতে স্বাভাবিকভাবে উত্তর দাও।
 3) দাম, স্টক, ডেলিভারি চার্জ বানানো যাবে না।
 4) অর্ডার নিতে হলে নাম, ফোন, ঠিকানা, প্রোডাক্ট, পরিমাণ চাও।
-5) মানুষের সাথে কথা বলতে চাইলে request_human টুল কল করো।
+5) মানুষের সাথে কথা বলতে চাইলে request_human টুল কল করো, তারপর বাংলায় জানাও যে Rich People-এর জন্য WhatsApp-এ কল/মেসেজ করতে: ${resolveWhatsAppContact(params.settings).link} (${resolveWhatsAppContact(params.settings).number})। অন্য কোনো নম্বর বানাবে না।
 6) অর্ডার প্রক্রিয়া: নাম, ফোন, ঠিকানা, প্রোডাক্ট, পরিমাণ এবং ঢাকার ভিতরে না বাইরে জেনে নাও। তারপর একটি সারাংশ দেখাও (প্রোডাক্ট, পরিমাণ, দাম, ডেলিভারি চার্জ, মোট) এবং "কনফার্ম করবেন?" জিজ্ঞেস করো। কাস্টমার স্পষ্টভাবে কনফার্ম করলে তবেই create_order টুল কল করো। নিজে কখনো order_id বানাবে না।
 7) create_order সফল হলে order_id সহ সংক্ষিপ্ত অর্ডার সারাংশ দিয়ে ধন্যবাদ জানাও (ক্যাশ অন ডেলিভারি, শীঘ্রই কনফার্মেশন কল আসবে)।
 8) কাস্টমার ছবি বা লিংক দেখতে চাইলে share_product_media টুল কল করো। কখনো নিজে URL বানাবে না।
@@ -169,7 +169,13 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
           orderPlaced = true;
         } else if (call.function.name === "request_human") {
           await requestHuman({ channel, customer_id: customerId, reason: String(args.reason || "") });
-          result = { ok: true, message: "Human support notified. Tell the customer a team member will reply soon." };
+          const wa = resolveWhatsAppContact(params.settings);
+          result = {
+            ok: true,
+            whatsapp_number: wa.number,
+            whatsapp_link: wa.link,
+            message: `Human support notified. Reply in Bangla: tell the customer to call or message Rich People on WhatsApp at ${wa.link} (${wa.number}). Suggested reply: ${humanSupportReply(params.settings)}`,
+          };
         } else if (call.function.name === "share_product_media") {
           result = runShareProductMedia(String(args.product_id || ""), params.products, media);
         } else {
