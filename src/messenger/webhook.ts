@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { askGrok } from "../ai/grok.js";
+import { askGrokWithMedia } from "../ai/grok.js";
+import { config } from "../config.js";
+import { deliverProductMedia } from "../media/deliver.js";
+import type { FetchFn } from "../media/validate.js";
 import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
 import { loadSettings } from "../sheets/settings.js";
@@ -51,6 +54,25 @@ async function sendMessengerText(psid: string, text: string): Promise<void> {
   }
 }
 
+export function buildMessengerImagePayload(psid: string, imageUrl: string) {
+  return {
+    recipient: { id: psid },
+    messaging_type: "RESPONSE",
+    message: { attachment: { type: "image", payload: { url: imageUrl, is_reusable: true } } },
+  };
+}
+
+export async function sendMessengerImage(psid: string, imageUrl: string, fetchFn: FetchFn = fetch as FetchFn): Promise<void> {
+  if (!PAGE_ACCESS_TOKEN) throw new Error("MESSENGER_PAGE_ACCESS_TOKEN নেই");
+  const url = `https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(PAGE_ACCESS_TOKEN)}`;
+  const r = await fetchFn(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildMessengerImagePayload(psid, imageUrl)),
+  });
+  if (!r.ok) throw new Error(`Messenger image send failed: ${r.status} ${await r.text()}`);
+}
+
 export async function handleMessengerEvent(req: Request, res: Response): Promise<void> {
   if (!validSignature(req)) {
     res.sendStatus(403);
@@ -80,8 +102,17 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
           console.log(`[handoff] bot paused for messenger:${psid}; message left for human`);
           continue;
         }
-        const reply = await askGrok({ userMessage: text, products, settings, channel: "messenger", customerId: psid });
-        await sendMessengerText(psid, reply);
+        const reply = await askGrokWithMedia({ userMessage: text, products, settings, channel: "messenger", customerId: psid });
+        await sendMessengerText(psid, reply.text);
+        if (reply.media.length) {
+          const results = await deliverProductMedia({
+            media: reply.media,
+            products,
+            enabled: config.mediaSendEnabled,
+            sendImage: (imageUrl) => sendMessengerImage(psid, imageUrl),
+          });
+          console.log(`[media] messenger:${psid}`, JSON.stringify(results));
+        }
       } catch (err) {
         console.error("Messenger handle error:", err);
         try {

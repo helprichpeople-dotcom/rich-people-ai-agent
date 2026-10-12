@@ -12,6 +12,8 @@ export const config = {
   grokApiKey: process.env.GROK_API_KEY || "",
   grokModel: process.env.GROK_MODEL || "grok-4.20-0309-non-reasoning",
   grokBaseUrl: process.env.GROK_BASE_URL || "https://api.x.ai/v1",
+  /** Product image sending. OFF unless explicitly "true". */
+  mediaSendEnabled: String(process.env.MEDIA_SEND_ENABLED || "").trim().toLowerCase() === "true",
 };
 
 export function assertSheetsConfig(): void {

@@ -8,7 +8,8 @@
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "test:sheets": "tsx src/test-sheets.ts",
-    "test:grok": "tsx src/test-grok.ts"
+    "test:grok": "tsx src/test-grok.ts",
+    "test:media": "tsx src/test-media.ts"
   },
   "dependencies": {
     "@types/express": "^5.0.6",

@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { askGrok } from "../ai/grok.js";
+import { askGrokWithMedia } from "../ai/grok.js";
+import { config } from "../config.js";
+import { deliverProductMedia } from "../media/deliver.js";
 import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
 import { loadSettings } from "../sheets/settings.js";
@@ -61,6 +63,20 @@ async function sendWhatsAppText(phoneNumberId: string, to: string, text: string)
     type: "text",
     text: { preview_url: false, body: text.slice(0, 4096) },
   });
+}
+
+export function buildWhatsAppImagePayload(to: string, imageUrl: string, caption?: string) {
+  return {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "image",
+    image: caption ? { link: imageUrl, caption: caption.slice(0, 1024) } : { link: imageUrl },
+  };
+}
+
+export async function sendWhatsAppImage(phoneNumberId: string, to: string, imageUrl: string, caption?: string): Promise<void> {
+  await graphPost(phoneNumberId, buildWhatsAppImagePayload(to, imageUrl, caption));
 }
 
 async function markRead(phoneNumberId: string, messageId: string): Promise<void> {
@@ -147,8 +163,17 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
           console.log(`[handoff] bot paused for whatsapp:${from}; message left for human`);
           continue;
         }
-        const reply = await askGrok({ userMessage: text, products, settings, channel: "whatsapp", customerId: from });
-          await sendWhatsAppText(phoneNumberId, from, reply);
+          const reply = await askGrokWithMedia({ userMessage: text, products, settings, channel: "whatsapp", customerId: from });
+          await sendWhatsAppText(phoneNumberId, from, reply.text);
+          if (reply.media.length) {
+            const results = await deliverProductMedia({
+              media: reply.media,
+              products,
+              enabled: config.mediaSendEnabled,
+              sendImage: (imageUrl, caption) => sendWhatsAppImage(phoneNumberId, from, imageUrl, caption),
+            });
+            console.log(`[media] whatsapp:${from}`, JSON.stringify(results));
+          }
         } catch (err) {
           console.error("WhatsApp handle error:", err);
           try {
