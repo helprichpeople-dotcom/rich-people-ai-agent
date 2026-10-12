@@ -1,10 +1,11 @@
 import OpenAI from "openai";
 import { assertGrokConfig, config } from "../config.js";
 import type { Product, SettingMap } from "../types/catalog.js";
+import { isAffirmative } from "../conversation/intent.js";
 import { createOrder } from "../sheets/orders.js";
 import { requestHuman, humanSupportReply, resolveWhatsAppContact } from "../support/handoff.js";
 import { validateImageUrl, validateProductUrl } from "../media/validate.js";
-import { getHistory, pushHistory, clearHistory } from "../memory.js";
+import { getHistory, pushHistory, clearHistory, setState } from "../memory.js";
 
 const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
@@ -109,6 +110,13 @@ export function runShareProductMedia(productId: string, products: Product[], med
   };
 }
 
+/** create_order gate: an earlier assistant turn asked to confirm, and the latest customer message is a clear yes. */
+export function hasExplicitConfirmation(history: { role: string; content: string }[], userMessage: string): boolean {
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant || !/(কনফার্ম|confirm|নিশ্চিত)/i.test(lastAssistant.content)) return false;
+  return isAffirmative(userMessage);
+}
+
 export async function askGrokWithMedia(params: AskParams): Promise<GrokReply> {
   const media: ReplyMedia[] = [];
   const channel = params.channel || "test";
@@ -136,6 +144,11 @@ export async function askGrokWithMedia(params: AskParams): Promise<GrokReply> {
 6) অর্ডার প্রক্রিয়া: নাম, ফোন, ঠিকানা, প্রোডাক্ট, পরিমাণ এবং ঢাকার ভিতরে না বাইরে জেনে নাও। তারপর একটি সারাংশ দেখাও (প্রোডাক্ট, পরিমাণ, দাম, ডেলিভারি চার্জ, মোট) এবং "কনফার্ম করবেন?" জিজ্ঞেস করো। কাস্টমার স্পষ্টভাবে কনফার্ম করলে তবেই create_order টুল কল করো। নিজে কখনো order_id বানাবে না।
 7) create_order সফল হলে order_id সহ সংক্ষিপ্ত অর্ডার সারাংশ দিয়ে ধন্যবাদ জানাও (ক্যাশ অন ডেলিভারি, শীঘ্রই কনফার্মেশন কল আসবে)।
 8) কাস্টমার ছবি বা লিংক দেখতে চাইলে share_product_media টুল কল করো। কখনো নিজে URL বানাবে না।
+9) কাস্টমার বাংলা, Banglish (রোমান হরফে বাংলা) বা ইংরেজি — যেভাবেই লিখুক, বানান ভুল হলেও অর্থ বুঝে একই ভাষার ধাঁচে উত্তর দাও। "dam koto", "shesh dam", "arekta dekhan" ইত্যাদি আগের কথোপকথন ও বর্তমান প্রোডাক্টের প্রসঙ্গে বোঝো।
+10) একাধিক প্রোডাক্ট হতে পারলে অনুমান না করে কোনটি জানতে চাও। কাস্টমারের উদ্দেশ্য নিশ্চিত না হলে নম্রভাবে জিজ্ঞেস করো।
+11) অর্ডারের জন্য কখনো চাপ দিও না; প্রতি উত্তরে সর্বোচ্চ একটি নম্র পরবর্তী ধাপ।
+12) প্রোডাক্টের বাইরের প্রশ্নে সৎভাবে বলো সাহায্য করতে পারবে না; কোনো তথ্য বানাবে না। অভিযোগ/রিফান্ড/মানুষের সাথে কথা বলতে চাইলে request_human কল করো।
+13) কাস্টমারের ব্যক্তিগত তথ্য শুধু অর্ডারের জন্য যা দরকার তাই চাও।
 
 Settings:
 ${settingsText}
@@ -166,7 +179,7 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
       const bad = findUnknownPrices(reply, params.products, params.settings);
       if (bad.length) console.warn(`[price-guard] ${memKey} reply mentions amounts not in Sheet: ${bad.join(",")}`);
       autoAttachIdentifiedProduct(params.userMessage, params.products, media, memKey);
-      if (orderPlaced) clearHistory(memKey);
+      if (orderPlaced) { clearHistory(memKey); setState(memKey, { collected: {}, next_needed: undefined }); }
       else pushHistory(memKey, { role: "assistant", content: reply });
       return { text: reply, media };
     }
@@ -176,8 +189,16 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
       try {
         const args = JSON.parse(call.function.arguments || "{}");
         if (call.function.name === "create_order") {
-          result = await createOrder({ ...args, channel, customer_id: customerId }, params.products);
-          orderPlaced = true;
+          if (!hasExplicitConfirmation(getHistory(memKey), params.userMessage)) {
+            console.warn(`[order] ${memKey} create_order blocked: no explicit confirmation after summary`);
+            result = { ok: false, error: "NOT_CONFIRMED: first show the full order summary (product, qty, price, delivery charge, total) and ask 'কনফার্ম করবেন?'. Call create_order only after the customer clearly says yes." };
+          } else {
+            const r = await createOrder({ ...args, channel, customer_id: customerId }, params.products);
+            result = r.verified === false
+              ? { ...r, note: "Row write could not be verified. Do NOT promise the order is saved; say the team will confirm by phone shortly." }
+              : r;
+            orderPlaced = true;
+          }
         } else if (call.function.name === "request_human") {
           await requestHuman({ channel, customer_id: customerId, reason: String(args.reason || "") });
           const wa = resolveWhatsAppContact(params.settings);

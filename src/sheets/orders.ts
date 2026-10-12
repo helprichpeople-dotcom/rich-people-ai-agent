@@ -22,6 +22,8 @@ export type OrderResult = {
   unit_price: number;
   delivery_charge: number;
   total: number;
+  /** true when the appended row was read back from the Orders sheet. */
+  verified?: boolean;
 };
 
 const DEFAULT_HEADER = [
@@ -120,9 +122,17 @@ async function doCreate(input: OrderInput, products: Product[]): Promise<OrderRe
     status: "pending", note: input.note || "",
   };
   await appendSheetRow("Orders!A1", fields.map((f) => values[f] ?? ""));
+  let verified = false;
+  try {
+    const after = await readSheetValues("Orders!A:Z");
+    verified = after.slice(1).some((r) => (r[col("order_id")] || "") === order_id);
+  } catch (err) {
+    console.error(`[order] verify read failed for ${order_id}:`, err instanceof Error ? err.message : err);
+  }
+  if (!verified) console.warn(`[order] ${order_id} could not be verified after write`);
   const result: OrderResult = {
     order_id, duplicate: false, product_name: product.product_name, quantity: qty,
-    unit_price: product.price, delivery_charge, total,
+    unit_price: product.price, delivery_charge, total, verified,
   };
   recent.set(key, { at: Date.now(), result });
   console.log(`[order] created ${order_id} channel=${input.channel} product=${product.product_id} qty=${qty}`);

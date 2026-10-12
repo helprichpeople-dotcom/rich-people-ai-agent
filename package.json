@@ -14,8 +14,9 @@
     "test:handoff": "tsx src/test-handoff.ts",
     "test:dedupe": "tsx src/test-media-dedupe.ts",
     "test:product": "tsx src/test-product.ts",
-    "test:all": "tsc --noEmit && npm run -s test:media && npm run -s test:image && npm run -s test:handoff && npm run -s test:dedupe && npm run -s test:product",
-    "typecheck": "tsc --noEmit"
+    "test:all": "tsc --noEmit && npm run -s test:media && npm run -s test:image && npm run -s test:handoff && npm run -s test:dedupe && npm run -s test:product && npm run -s test:conversation",
+    "typecheck": "tsc --noEmit",
+    "test:conversation": "tsx src/test-conversation.ts"
   },
   "dependencies": {
     "@types/express": "^5.0.6",

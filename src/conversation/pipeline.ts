@@ -2,7 +2,9 @@ import { askGrokWithMedia, type GrokReply } from "../ai/grok.js";
 import { getCatalog, type Catalog } from "../sheets/catalog.js";
 import { lookupAd } from "../sheets/adMapping.js";
 import { resolveProduct } from "../sheets/products.js";
-import { getState, isHandedOff, setActiveProduct, setState } from "../memory.js";
+import { getState, isHandedOff, pushHistory, setActiveProduct, setState } from "../memory.js";
+import { detectIntent, extractOrderInfo, type IntentGuess } from "./intent.js";
+import { humanSupportReply, requestHuman } from "../support/handoff.js";
 
 export type Channel = "messenger" | "whatsapp";
 
@@ -10,7 +12,54 @@ export type PipelineDeps = {
   catalog?: () => Promise<Catalog>;
   ask?: typeof askGrokWithMedia;
   now?: number;
+  handoff?: typeof requestHuman;
 };
+
+const ORDER_FIELDS = ["product", "quantity", "customer_name", "phone", "address", "delivery_area"] as const;
+type Collected = { phone?: string; quantity?: number; delivery_area?: "inside_dhaka" | "outside_dhaka" };
+
+/** Intent-specific guidance for the model (no new facts, only behaviour). */
+export function intentNotes(g: IntentGuess, st: { shown_product_ids: string[]; active_product_id?: string }, catalog: Catalog): string[] {
+  const n: string[] = [`সম্ভাব্য intent: ${g.intent} (আনুমানিক ${Math.round(g.confidence * 100)}%, নিশ্চিত নয়)${g.others.length ? `; অন্য সম্ভাবনা: ${g.others.join(", ")}` : ""}।`];
+  switch (g.intent) {
+    case "discount_request":
+      n.push("ডিসকাউন্ট/শেষ দাম: শুধু শিটের offer কলাম থেকে বলো; offer খালি হলে বিনয়ের সাথে জানাও দাম ফিক্সড। নিজে কোনো ছাড় বানাবে না।");
+      break;
+    case "comparison":
+      n.push("তুলনা: শুধু শিটের দাম/বিবরণ/সুবিধা দিয়ে নিরপেক্ষভাবে তুলনা করো; কোনটা ‘সেরা’ দাবি করো না, কাস্টমারের প্রয়োজন জিজ্ঞেস করো।");
+      break;
+    case "irrelevant_question":
+      n.push("প্রশ্নটি Rich People প্রোডাক্টের বাইরে মনে হচ্ছে: সংক্ষেপে সৎভাবে বলো এ বিষয়ে সাহায্য করতে পারবে না, তারপর প্রোডাক্ট নিয়ে সাহায্যের প্রস্তাব দাও।");
+      break;
+    case "purchase_intent":
+    case "order_request":
+      n.push("অর্ডারের দিকে এক ধাপ: শুধু পরের দরকারি তথ্যটি নম্র ভাবে চাও; কোনো চাপ দিও না।");
+      break;
+    case "product_question": {
+      const others = catalog.products.filter((p) => !st.shown_product_ids.includes(p.product_id)).slice(0, 3);
+      n.push(`"আরেকটা দেখান"-ধরনের অনুরোধ হলে আগে দেখানো (${st.shown_product_ids.join(", ") || "কিছু না"}) ছাড়া অন্য প্রোডাক্ট প্রস্তাব করো, যেমন: ${others.map((p) => p.product_id).join(", ")}।`);
+      break;
+    }
+  }
+  return n;
+}
+
+export function nextNeeded(collected: Collected, hasProduct: boolean): string | undefined {
+  if (!hasProduct) return "product";
+  if (!collected.quantity) return "quantity";
+  return collected.phone ? (collected.delivery_area ? "name_address_check" : "delivery_area") : "phone";
+}
+
+const locks = new Map<string, Promise<unknown>>();
+/** Serialize turns per customer (prevents concurrent-message races). */
+export function withCustomerLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = locks.get(key) || Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  locks.set(key, tail);
+  void tail.then(() => { if (locks.get(key) === tail) locks.delete(key); });
+  return run;
+}
 
 /**
  * Apply an ad referral: valid mapping -> set active product (overrides previous).
@@ -63,8 +112,13 @@ export async function handleCustomerText(params: {
   text: string;
   referralId?: string;
   deps?: PipelineDeps;
-}): Promise<(GrokReply & { catalog: Catalog }) | null> {
+}): Promise<(GrokReply & { catalog: Catalog; intent?: IntentGuess; handedOff?: boolean }) | null> {
+  return withCustomerLock(`${params.channel}:${params.customerId}`, () => runTurn(params));
+}
+
+async function runTurn(params: Parameters<typeof handleCustomerText>[0]): Promise<(GrokReply & { catalog: Catalog; intent?: IntentGuess; handedOff?: boolean }) | null> {
   const { channel, customerId, text } = params;
+  const key = `${channel}:${customerId}`;
   const now = params.deps?.now ?? Date.now();
   const catalog = await (params.deps?.catalog ?? getCatalog)();
   if (isHandedOff(`${channel}:${customerId}`)) {
@@ -73,6 +127,28 @@ export async function handleCustomerText(params: {
   }
   applyReferral(channel, customerId, params.referralId, catalog, now);
   const turn = resolveTurnProduct(channel, customerId, text, catalog, now);
+  const intent = detectIntent(text);
+
+  // Complaint / refund / human: hand off directly (does not depend on the model), pause AI.
+  if ((intent.intent === "complaint" || intent.intent === "human_support_request") && intent.confidence >= 0.6) {
+    await (params.deps?.handoff ?? requestHuman)({ channel, customer_id: customerId, reason: `auto:${intent.intent}` });
+    const reply = humanSupportReply(catalog.settings);
+    const prefix = intent.intent === "complaint" ? "আপনার অসুবিধার জন্য আমরা আন্তরিকভাবে দুঃখিত। " : "";
+    pushHistory(key, { role: "user", content: text });
+    pushHistory(key, { role: "assistant", content: prefix + reply });
+    setState(key, { intent: intent.intent }, now);
+    console.log(`[intent] ${key} ${intent.intent} conf=${intent.confidence} -> handoff`);
+    return { text: prefix + reply, media: [], catalog, intent, handedOff: true };
+  }
+
+  const prevCollected = (getState(key, now).collected as Collected) || {};
+  const collected: Collected = { ...prevCollected, ...extractOrderInfo(text) };
+  const need = nextNeeded(collected, Boolean(turn.activeProductId));
+  const st = setState(key, { intent: intent.intent, intent_confidence: intent.confidence, collected, next_needed: need }, now);
+  turn.notes.push(...intentNotes(intent, st, catalog));
+  if (intent.intent === "order_request" || intent.intent === "purchase_intent" || prevCollected.phone || prevCollected.quantity) {
+    turn.notes.push(`অর্ডার তথ্য (আনুমানিক): পরিমাণ=${collected.quantity ?? "?"}, ফোন=${collected.phone ? "পাওয়া গেছে" : "?"}, এলাকা=${collected.delivery_area ?? "?"}। পরের দরকারি তথ্য: ${need}। দরকারি ফিল্ড: ${ORDER_FIELDS.join(", ")}।`);
+  }
   const ask = params.deps?.ask ?? askGrokWithMedia;
   const reply = await ask({
     userMessage: text,
@@ -83,5 +159,5 @@ export async function handleCustomerText(params: {
     activeProductId: turn.activeProductId,
     contextNotes: turn.notes,
   });
-  return { ...reply, catalog };
+  return { ...reply, catalog, intent };
 }
