@@ -3,7 +3,7 @@ import { assertGrokConfig, config } from "../config.js";
 import type { Product, SettingMap } from "../types/catalog.js";
 import { createOrder } from "../sheets/orders.js";
 import { requestHuman } from "../support/handoff.js";
-import { validateProductUrl } from "../media/validate.js";
+import { validateImageUrl, validateProductUrl } from "../media/validate.js";
 import { getHistory, pushHistory, clearHistory } from "../memory.js";
 
 const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -154,6 +154,7 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
     const calls = msg.tool_calls || [];
     if (!calls.length) {
       const reply = msg.content?.trim() || "উত্তর তৈরি হয়নি।";
+      autoAttachIdentifiedProduct(params.userMessage, params.products, media, memKey);
       if (orderPlaced) clearHistory(memKey);
       else pushHistory(memKey, { role: "assistant", content: reply });
       return { text: reply, media };
@@ -182,4 +183,68 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
     }
   }
   return { text: "দুঃখিত, এখন অনুরোধটি সম্পন্ন করা যায়নি। একটু পরে আবার চেষ্টা করুন।", media };
+}
+
+const autoSent = new Map<string, Set<string>>();
+export function clearAutoSent(): void { autoSent.clear(); }
+
+/** Finds the single active product named in the text (by product_id or product_name). */
+export function identifyProductInText(text: string, products: Product[]): Product | null {
+  const t = String(text || "").toLowerCase();
+  if (!t.trim()) return null;
+  const hits = products.filter((p) => {
+    const id = p.product_id.trim().toLowerCase();
+    const name = p.product_name.trim().toLowerCase();
+    return (id && t.includes(id)) || (name.length >= 3 && t.includes(name));
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * Outbound: when the customer's message clearly identifies one product and the model did
+ * not queue its image, queue it — once per product per conversation (no spam).
+ */
+export function autoAttachIdentifiedProduct(text: string, products: Product[], media: ReplyMedia[], memKey: string): void {
+  if (media.length) return;
+  const p = identifyProductInText(text, products);
+  if (!p || !p.image_url?.trim()) return;
+  const sent = autoSent.get(memKey) || new Set<string>();
+  if (sent.has(p.product_id)) return;
+  sent.add(p.product_id);
+  autoSent.set(memKey, sent);
+  if (autoSent.size > 5000) autoSent.clear();
+  media.push({ type: "product_image", product_id: p.product_id });
+}
+
+function sniffMime(b: Uint8Array): string | null {
+  if (b[0] === 0xff && b[1] === 0xd8) return "image/jpeg";
+  if (b[0] === 0x89 && b[1] === 0x50) return "image/png";
+  if (b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57 && b[9] === 0x45) return "image/webp";
+  return null;
+}
+
+/**
+ * Vision fallback for inbound images: asks Grok which product_id (if any) the photo shows.
+ * Returns null on any error / unsupported model / "NONE".
+ */
+export async function grokVisionMatch(bytes: Uint8Array, products: Product[], client?: Pick<OpenAI, "chat">): Promise<string | null> {
+  const mime = sniffMime(bytes);
+  if (!mime || !config.grokApiKey) return null;
+  const c = client || createGrokClient();
+  const list = products.map((p) => `- ${p.product_id}: ${p.product_name} — ${p.description}`).join("\n");
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    { type: "text", text: `Customer photo below. Which ONE product from this catalog does it show? Reply with only the product_id, or NONE if unsure.\n${list}` },
+    { type: "image_url", image_url: { url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}` } },
+  ];
+  for (const p of products.slice(0, 6)) {
+    if (!p.image_url) continue;
+    const v = await validateImageUrl(p.image_url);
+    if (!v.ok) continue;
+    content.push({ type: "text", text: `Reference image for ${p.product_id}:` });
+    content.push({ type: "image_url", image_url: { url: v.url } });
+  }
+  const r = await c.chat.completions.create({ model: config.grokVisionModel, messages: [{ role: "user", content }], temperature: 0 });
+  const out = (r.choices[0]?.message?.content || "").trim();
+  const id = products.find((p) => out.toUpperCase().includes(p.product_id.toUpperCase()));
+  return id ? id.product_id : null;
 }

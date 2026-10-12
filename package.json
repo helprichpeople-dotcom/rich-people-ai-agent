@@ -18,10 +18,13 @@
     "dotenv": "^16.4.5",
     "express": "^5.3.0",
     "googleapis": "^144.0.0",
+    "jpeg-js": "^0.4.4",
     "openai": "^4.77.0",
+    "pngjs": "^7.0.0",
     "typescript": "^5.7.2"
   },
   "devDependencies": {
+    "@types/pngjs": "^6.0.5",
     "tsx": "^4.19.2"
   },
   "engines": {

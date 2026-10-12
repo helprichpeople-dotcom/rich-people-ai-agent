@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { askGrokWithMedia } from "../ai/grok.js";
+import { askGrokWithMedia, grokVisionMatch } from "../ai/grok.js";
 import { config } from "../config.js";
 import { deliverProductMedia } from "../media/deliver.js";
-import { fetchImageBytes, handleInboundImage } from "../media/match.js";
+import { fetchImageBytes, handleInboundImage, type VisionMatcher } from "../media/match.js";
 import type { FetchFn } from "../media/validate.js";
 import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
@@ -218,12 +218,12 @@ export async function handleWhatsAppImage(
   phoneNumberId: string,
   from: string,
   mediaId: string,
-  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string, c: string) => Promise<void>; products?: Awaited<ReturnType<typeof loadProducts>> } = {}
+  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string, c: string) => Promise<void>; products?: Awaited<ReturnType<typeof loadProducts>>; vision?: VisionMatcher | null } = {}
 ) {
   const products = deps.products ?? (await loadProducts());
   const bytes = await downloadWhatsAppMedia(mediaId, deps.fetchFn);
-  const result = await handleInboundImage({ bytes, products, fetchFn: deps.fetchFn });
-  console.log(`[image-in] whatsapp:${from} matched=${result.product?.product_id || "none"}`);
+  const result = await handleInboundImage({ bytes, products, fetchFn: deps.fetchFn, vision: deps.vision !== undefined ? deps.vision : config.imageVisionEnabled ? (b, ps) => grokVisionMatch(b, ps) : null });
+  console.log(`[image-in] whatsapp:${from} matched=${result.product?.product_id || "none"} method=${result.method || "-"} score=${result.score ?? "-"} bytes=${bytes ? "ok" : "none"}`);
   await (deps.sendText ?? ((t) => sendWhatsAppText(phoneNumberId, from, t)))(result.text);
   if (result.product) {
     await deliverProductMedia({
