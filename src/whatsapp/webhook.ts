@@ -178,6 +178,7 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
               media: reply.media,
               products,
               enabled: config.mediaSendEnabled,
+              recipientKey: `whatsapp:${from}`,
               sendImage: (imageUrl, caption) => sendWhatsAppImage(phoneNumberId, from, imageUrl, caption),
             });
             console.log(`[media] whatsapp:${from}`, JSON.stringify(results));
@@ -231,6 +232,7 @@ export async function handleWhatsAppImage(
       products,
       enabled: config.mediaSendEnabled,
       fetchFn: deps.fetchFn,
+      recipientKey: `whatsapp:${from}`,
       sendImage: deps.sendImage ?? ((u, c) => sendWhatsAppImage(phoneNumberId, from, u, c)),
     });
   }

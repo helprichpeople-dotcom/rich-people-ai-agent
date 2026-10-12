@@ -55,6 +55,17 @@ async function sendMessengerText(psid: string, text: string): Promise<void> {
   }
 }
 
+const seenMids = new Map<string, number>();
+/** Meta can redeliver the same message (retries / duplicate entries); handle each mid once. */
+export function isDuplicateMid(mid?: string, now = Date.now()): boolean {
+  if (!mid) return false;
+  if (seenMids.has(mid)) return true;
+  seenMids.set(mid, now);
+  if (seenMids.size > 5000) for (const [k, v] of seenMids) if (now - v > 3600_000) seenMids.delete(k);
+  return false;
+}
+export function clearSeenMids(): void { seenMids.clear(); }
+
 export function buildMessengerImagePayload(psid: string, imageUrl: string) {
   return {
     recipient: { id: psid },
@@ -86,7 +97,7 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
     entry?: Array<{
       messaging?: Array<{
         sender?: { id?: string };
-        message?: { text?: string; is_echo?: boolean; attachments?: Array<{ type?: string; payload?: { url?: string } }> };
+        message?: { mid?: string; text?: string; is_echo?: boolean; attachments?: Array<{ type?: string; payload?: { url?: string } }> };
       }>;
     }>;
   };
@@ -97,6 +108,10 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
       const psid = event.sender?.id;
       const text = event.message?.text;
       if (!psid || event.message?.is_echo) continue;
+      if (isDuplicateMid(event.message?.mid)) {
+        console.log(`[messenger] duplicate mid ignored ${event.message?.mid}`);
+        continue;
+      }
       const img = (event.message?.attachments || []).find((a) => a.type === "image" && a.payload?.url);
       if (img && !text) {
         try {
@@ -121,6 +136,7 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
             media: reply.media,
             products,
             enabled: config.mediaSendEnabled,
+            recipientKey: `messenger:${psid}`,
             sendImage: (imageUrl) => sendMessengerImage(psid, imageUrl),
           });
           console.log(`[media] messenger:${psid}`, JSON.stringify(results));
@@ -154,6 +170,7 @@ export async function handleMessengerImage(
       products,
       enabled: config.mediaSendEnabled,
       fetchFn: deps.fetchFn,
+      recipientKey: `messenger:${psid}`,
       sendImage: deps.sendImage ?? ((u) => sendMessengerImage(psid, u)),
     });
   }

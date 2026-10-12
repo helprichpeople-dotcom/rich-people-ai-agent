@@ -11,7 +11,8 @@
     "test:grok": "tsx src/test-grok.ts",
     "test:media": "tsx src/test-media.ts",
     "test:image": "tsx src/test-image-match.ts",
-    "test:handoff": "tsx src/test-handoff.ts"
+    "test:handoff": "tsx src/test-handoff.ts",
+    "test:dedupe": "tsx src/test-media-dedupe.ts"
   },
   "dependencies": {
     "@types/express": "^5.0.6",
