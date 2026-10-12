@@ -35,3 +35,7 @@ export function isHandedOff(key: string): boolean {
 export function clearHandoff(key: string): void {
   handoff.delete(key);
 }
+export function listHandoffs(): { key: string; until: number }[] {
+  const now = Date.now();
+  return [...handoff.entries()].filter(([, u]) => u > now).map(([key, until]) => ({ key, until }));
+}

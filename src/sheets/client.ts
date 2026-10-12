@@ -45,3 +45,13 @@ export async function appendSheetRow(range: string, row: (string | number)[]): P
     requestBody: { values: [row] },
   });
 }
+
+export async function updateSheetCell(range: string, value: string): Promise<void> {
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.sheetsId,
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[value]] },
+  });
+}

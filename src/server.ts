@@ -1,6 +1,7 @@
 import express from "express";
 import { handleMessengerEvent, verifyWebhook } from "./messenger/webhook.js";
 import { handleWhatsAppEvent, verifyWhatsAppWebhook } from "./whatsapp/webhook.js";
+import { adminRouter } from "./admin.js";
 import { dataDeletion, privacyPolicy, terms } from "./legal.js";
 
 const app = express();
@@ -27,6 +28,8 @@ app.get("/privacy-policy", privacyPolicy);
 app.get("/data-deletion", dataDeletion);
 app.get("/terms", terms);
 app.get("/", (_req, res) => res.redirect("/privacy"));
+
+app.use("/admin", adminRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
