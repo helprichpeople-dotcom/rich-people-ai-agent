@@ -18,7 +18,7 @@ export function getSheetsClient() {
   }
   const auth = new google.auth.GoogleAuth({
     credentials,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
   return google.sheets({ version: "v4", auth });
 }
@@ -33,4 +33,15 @@ export async function readSheetValues(
     range,
   });
   return (res.data.values as string[][]) || [];
+}
+
+export async function appendSheetRow(range: string, row: (string | number)[]): Promise<void> {
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: config.sheetsId,
+    range,
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [row] },
+  });
 }

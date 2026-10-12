@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
 import { askGrok } from "../ai/grok.js";
+import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
 import { loadSettings } from "../sheets/settings.js";
 
@@ -142,7 +143,11 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
             continue;
           }
           const [products, settings] = await Promise.all([loadProducts(), loadSettings()]);
-          const reply = await askGrok({ userMessage: text, products, settings });
+          if (isHandedOff(`whatsapp:${from}`)) {
+          console.log(`[handoff] bot paused for whatsapp:${from}; message left for human`);
+          continue;
+        }
+        const reply = await askGrok({ userMessage: text, products, settings, channel: "whatsapp", customerId: from });
           await sendWhatsAppText(phoneNumberId, from, reply);
         } catch (err) {
           console.error("WhatsApp handle error:", err);

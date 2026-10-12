@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
 import { askGrok } from "../ai/grok.js";
+import { isHandedOff } from "../memory.js";
 import { loadProducts } from "../sheets/products.js";
 import { loadSettings } from "../sheets/settings.js";
 
@@ -75,7 +76,11 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
       if (!psid || !text || event.message?.is_echo) continue;
       try {
         const [products, settings] = await Promise.all([loadProducts(), loadSettings()]);
-        const reply = await askGrok({ userMessage: text, products, settings });
+        if (isHandedOff(`messenger:${psid}`)) {
+          console.log(`[handoff] bot paused for messenger:${psid}; message left for human`);
+          continue;
+        }
+        const reply = await askGrok({ userMessage: text, products, settings, channel: "messenger", customerId: psid });
         await sendMessengerText(psid, reply);
       } catch (err) {
         console.error("Messenger handle error:", err);
