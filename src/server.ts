@@ -1,4 +1,6 @@
+import crypto from "node:crypto";
 import express from "express";
+import { refreshCatalog, catalogStatus } from "./sheets/catalog.js";
 import { handleMessengerEvent, verifyWebhook } from "./messenger/webhook.js";
 import { handleWhatsAppEvent, verifyWhatsAppWebhook } from "./whatsapp/webhook.js";
 import { adminRouter } from "./admin.js";
@@ -28,6 +30,22 @@ app.get("/privacy-policy", privacyPolicy);
 app.get("/data-deletion", dataDeletion);
 app.get("/terms", terms);
 app.get("/", (_req, res) => res.redirect("/privacy"));
+
+// Manual / Apps Script onEdit cache refresh. Disabled unless CATALOG_REFRESH_TOKEN is set.
+app.post("/admin/catalog/refresh", async (req, res) => {
+  const want = process.env.CATALOG_REFRESH_TOKEN || "";
+  const got = String(req.header("x-refresh-token") || "");
+  if (!want || got.length !== want.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want))) {
+    res.sendStatus(403);
+    return;
+  }
+  try {
+    await refreshCatalog();
+    res.json({ ok: true, ...catalogStatus() });
+  } catch {
+    res.status(502).json({ ok: false });
+  }
+});
 
 app.use("/admin", adminRouter);
 

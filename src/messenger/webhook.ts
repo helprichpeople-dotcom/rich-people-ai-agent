@@ -1,13 +1,15 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { askGrokWithMedia, grokVisionMatch } from "../ai/grok.js";
+import { grokVisionMatch } from "../ai/grok.js";
+import { applyReferral, handleCustomerText } from "../conversation/pipeline.js";
+import { extractMessengerReferral, type MessengerEventLike } from "../conversation/referral.js";
+import { getCatalog } from "../sheets/catalog.js";
 import { config } from "../config.js";
 import { deliverProductMedia } from "../media/deliver.js";
 import { fetchImageBytes, handleInboundImage, type VisionMatcher } from "../media/match.js";
 import type { FetchFn } from "../media/validate.js";
-import { isHandedOff } from "../memory.js";
-import { loadProducts } from "../sheets/products.js";
-import { loadSettings } from "../sheets/settings.js";
+import { isHandedOff, setActiveProduct } from "../memory.js";
+import type { Product } from "../types/catalog.js";
 
 const VERIFY_TOKEN = process.env.MESSENGER_VERIFY_TOKEN || "";
 const APP_SECRET = process.env.MESSENGER_APP_SECRET || "";
@@ -95,7 +97,7 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
   const body = req.body as {
     object?: string;
     entry?: Array<{
-      messaging?: Array<{
+      messaging?: Array<MessengerEventLike & {
         sender?: { id?: string };
         message?: { mid?: string; text?: string; is_echo?: boolean; attachments?: Array<{ type?: string; payload?: { url?: string } }> };
       }>;
@@ -108,6 +110,7 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
       const psid = event.sender?.id;
       const text = event.message?.text;
       if (!psid || event.message?.is_echo) continue;
+      const refId = extractMessengerReferral(event);
       if (isDuplicateMid(event.message?.mid)) {
         console.log(`[messenger] duplicate mid ignored ${event.message?.mid}`);
         continue;
@@ -122,14 +125,20 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
         }
         continue;
       }
-      if (!text) continue;
-      try {
-        const [products, settings] = await Promise.all([loadProducts(), loadSettings()]);
-        if (isHandedOff(`messenger:${psid}`)) {
-          console.log(`[handoff] bot paused for messenger:${psid}; message left for human`);
-          continue;
+      if (!text) {
+        if (refId) {
+          try {
+            applyReferral("messenger", psid, refId, await getCatalog());
+          } catch (err) {
+            console.error("Messenger referral error:", err);
+          }
         }
-        const reply = await askGrokWithMedia({ userMessage: text, products, settings, channel: "messenger", customerId: psid });
+        continue;
+      }
+      try {
+        const reply = await handleCustomerText({ channel: "messenger", customerId: psid, text, referralId: refId });
+        if (!reply) continue;
+        const products = reply.catalog.products;
         await sendMessengerText(psid, reply.text);
         if (reply.media.length) {
           const results = await deliverProductMedia({
@@ -157,14 +166,15 @@ export async function handleMessengerEvent(req: Request, res: Response): Promise
 export async function handleMessengerImage(
   psid: string,
   imageUrl: string,
-  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string) => Promise<void>; products?: Awaited<ReturnType<typeof loadProducts>>; vision?: VisionMatcher | null } = {}
+  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string) => Promise<void>; products?: Product[]; vision?: VisionMatcher | null } = {}
 ) {
-  const products = deps.products ?? (await loadProducts());
+  const products = deps.products ?? (await getCatalog()).products;
   const bytes = await fetchImageBytes(imageUrl, deps.fetchFn);
   const result = await handleInboundImage({ bytes, sourceUrl: imageUrl, products, fetchFn: deps.fetchFn, vision: deps.vision !== undefined ? deps.vision : config.imageVisionEnabled ? (b, ps) => grokVisionMatch(b, ps) : null });
   console.log(`[image-in] messenger:${psid} matched=${result.product?.product_id || "none"} method=${result.method || "-"} score=${result.score ?? "-"} bytes=${bytes ? "ok" : "none"}`);
   await (deps.sendText ?? ((t) => sendMessengerText(psid, t)))(result.text);
   if (result.product) {
+    setActiveProduct(`messenger:${psid}`, result.product.product_id, "image");
     await deliverProductMedia({
       media: [{ type: "product_image", product_id: result.product.product_id }],
       products,

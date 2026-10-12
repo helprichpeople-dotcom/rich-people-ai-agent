@@ -12,7 +12,10 @@
     "test:media": "tsx src/test-media.ts",
     "test:image": "tsx src/test-image-match.ts",
     "test:handoff": "tsx src/test-handoff.ts",
-    "test:dedupe": "tsx src/test-media-dedupe.ts"
+    "test:dedupe": "tsx src/test-media-dedupe.ts",
+    "test:product": "tsx src/test-product.ts",
+    "test:all": "tsc --noEmit && npm run -s test:media && npm run -s test:image && npm run -s test:handoff && npm run -s test:dedupe && npm run -s test:product",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@types/express": "^5.0.6",

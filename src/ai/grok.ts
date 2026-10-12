@@ -74,6 +74,10 @@ type AskParams = {
   channel?: string;
   customerId?: string;
   client?: Pick<OpenAI, "chat">;
+  /** Product the conversation is currently about (from ad / text / image). */
+  activeProductId?: string;
+  /** Extra system notes from the pipeline (ambiguity, intent, state). */
+  contextNotes?: string[];
 };
 
 /** Backwards-compatible: text only. */
@@ -112,6 +116,11 @@ export async function askGrokWithMedia(params: AskParams): Promise<GrokReply> {
   const memKey = `${channel}:${customerId}`;
   const client = params.client || createGrokClient();
   const catalog = params.products.map(buildCatalogLine).join("\n");
+  const active = params.activeProductId ? params.products.find((p) => p.product_id === params.activeProductId) : undefined;
+  const activeText = active
+    ? `\n\nবর্তমান প্রোডাক্ট (active_product_id=${active.product_id}): কাস্টমার অন্য প্রোডাক্টের নাম না বললে "দাম কত", "ডেলিভারি", "অর্ডার" ইত্যাদি এই প্রোডাক্ট নিয়েই ধরো।\n${buildCatalogLine(active)}`
+    : "";
+  const notesText = params.contextNotes?.length ? `\n\nকনটেক্সট নোট:\n${params.contextNotes.map((n) => `- ${n}`).join("\n")}` : "";
 
   const settingsText = Object.entries(params.settings)
     .map(([k, v]) => `- ${k}: ${v}`)
@@ -132,7 +141,7 @@ Settings:
 ${settingsText}
 
 Products:
-${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট নেই)"}`;
+${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট নেই)"}${activeText}${notesText}`;
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: system },
@@ -154,6 +163,8 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
     const calls = msg.tool_calls || [];
     if (!calls.length) {
       const reply = msg.content?.trim() || "উত্তর তৈরি হয়নি।";
+      const bad = findUnknownPrices(reply, params.products, params.settings);
+      if (bad.length) console.warn(`[price-guard] ${memKey} reply mentions amounts not in Sheet: ${bad.join(",")}`);
       autoAttachIdentifiedProduct(params.userMessage, params.products, media, memKey);
       if (orderPlaced) clearHistory(memKey);
       else pushHistory(memKey, { role: "assistant", content: reply });
@@ -253,4 +264,31 @@ export async function grokVisionMatch(bytes: Uint8Array, products: Product[], cl
   const out = (r.choices[0]?.message?.content || "").trim();
   const id = products.find((p) => out.toUpperCase().includes(p.product_id.toUpperCase()));
   return id ? id.product_id : null;
+}
+
+/**
+ * Price guard: returns amounts written next to a currency marker (৳/tk/taka/টাকা/BDT)
+ * that are not any Sheet price, delivery charge, valid total, or number in offer/Settings text.
+ */
+export function findUnknownPrices(reply: string, products: Product[], settings: SettingMap = {}): number[] {
+  const t = String(reply || "").replace(/[০-৯]/g, (d) => String("০১২৩৪৫৬৭৮৯".indexOf(d)));
+  const re = /(?:৳|tk\.?|taka|টাকা|bdt)\s*([\d,]+)|([\d,]+)\s*(?:৳|tk\b|taka|টাকা|bdt)/gi;
+  const known = new Set<number>();
+  const textNums = (x: string) => (x.replace(/[০-৯]/g, (d) => String("০১২৩৪৫৬৭৮৯".indexOf(d))).match(/\d[\d,]*/g) || []).map((n) => Number(n.replace(/,/g, "")));
+  for (const p of products) {
+    for (const v of [p.price, p.delivery_inside_dhaka, p.delivery_outside_dhaka]) known.add(v);
+    for (const q of [1, 2, 3, 4, 5]) {
+      known.add(p.price * q);
+      known.add(p.price * q + p.delivery_inside_dhaka);
+      known.add(p.price * q + p.delivery_outside_dhaka);
+    }
+    textNums(`${p.offer} ${p.faq} ${p.description}`).forEach((n) => known.add(n));
+  }
+  Object.values(settings).forEach((v) => textNums(String(v)).forEach((n) => known.add(n)));
+  const out: number[] = [];
+  for (const m of t.matchAll(re)) {
+    const n = Number(String(m[1] || m[2]).replace(/,/g, ""));
+    if (Number.isFinite(n) && n > 0 && !known.has(n)) out.push(n);
+  }
+  return out;
 }

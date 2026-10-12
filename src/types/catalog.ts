@@ -12,6 +12,10 @@ export type Product = {
   offer: string;
   faq: string;
   active: boolean;
+  /** Optional Products column `aliases` (comma separated). */
+  aliases?: string[];
 };
+
+export type AdMapping = { ad_id: string; product_id: string; platform: "messenger" | "whatsapp" | "both"; campaign_name: string };
 
 export type SettingMap = Record<string, string>;

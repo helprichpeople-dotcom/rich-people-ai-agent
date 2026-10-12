@@ -1,13 +1,15 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { askGrokWithMedia, grokVisionMatch } from "../ai/grok.js";
+import { grokVisionMatch } from "../ai/grok.js";
+import { handleCustomerText } from "../conversation/pipeline.js";
+import { extractWhatsAppReferral, type WaReferralLike } from "../conversation/referral.js";
+import { getCatalog } from "../sheets/catalog.js";
 import { config } from "../config.js";
 import { deliverProductMedia } from "../media/deliver.js";
 import { fetchImageBytes, handleInboundImage, type VisionMatcher } from "../media/match.js";
 import type { FetchFn } from "../media/validate.js";
-import { isHandedOff } from "../memory.js";
-import { loadProducts } from "../sheets/products.js";
-import { loadSettings } from "../sheets/settings.js";
+import { isDuplicateMessageId, isHandedOff, setActiveProduct } from "../memory.js";
+import type { Product } from "../types/catalog.js";
 
 const VERIFY_TOKEN =
   process.env.WHATSAPP_VERIFY_TOKEN || process.env.MESSENGER_VERIFY_TOKEN || "";
@@ -93,7 +95,7 @@ async function markRead(phoneNumberId: string, messageId: string): Promise<void>
   }
 }
 
-type WaMessage = {
+type WaMessage = WaReferralLike & {
   from?: string;
   id?: string;
   type?: string;
@@ -114,7 +116,6 @@ function extractText(m: WaMessage): string | undefined {
   return undefined;
 }
 
-const seen = new Set<string>();
 
 export async function handleWhatsAppEvent(req: Request, res: Response): Promise<void> {
   if (!validSignature(req)) {
@@ -146,11 +147,13 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
         const from = m.from;
         if (!from || !phoneNumberId) continue;
         if (m.id) {
-          if (seen.has(m.id)) continue;
-          seen.add(m.id);
-          if (seen.size > 1000) seen.clear();
+          if (isDuplicateMessageId(`wa:${m.id}`)) {
+            console.log(`[whatsapp] duplicate message id ignored`);
+            continue;
+          }
           void markRead(phoneNumberId, m.id);
         }
+        const refId = extractWhatsAppReferral(m);
         const text = extractText(m);
         try {
           if (m.type === "image" && m.image?.id) {
@@ -166,12 +169,9 @@ export async function handleWhatsAppEvent(req: Request, res: Response): Promise<
             );
             continue;
           }
-          const [products, settings] = await Promise.all([loadProducts(), loadSettings()]);
-          if (isHandedOff(`whatsapp:${from}`)) {
-          console.log(`[handoff] bot paused for whatsapp:${from}; message left for human`);
-          continue;
-        }
-          const reply = await askGrokWithMedia({ userMessage: text, products, settings, channel: "whatsapp", customerId: from });
+          const reply = await handleCustomerText({ channel: "whatsapp", customerId: from, text, referralId: refId });
+          if (!reply) continue;
+          const products = reply.catalog.products;
           await sendWhatsAppText(phoneNumberId, from, reply.text);
           if (reply.media.length) {
             const results = await deliverProductMedia({
@@ -219,14 +219,15 @@ export async function handleWhatsAppImage(
   phoneNumberId: string,
   from: string,
   mediaId: string,
-  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string, c: string) => Promise<void>; products?: Awaited<ReturnType<typeof loadProducts>>; vision?: VisionMatcher | null } = {}
+  deps: { fetchFn?: FetchFn; sendText?: (t: string) => Promise<void>; sendImage?: (u: string, c: string) => Promise<void>; products?: Product[]; vision?: VisionMatcher | null } = {}
 ) {
-  const products = deps.products ?? (await loadProducts());
+  const products = deps.products ?? (await getCatalog()).products;
   const bytes = await downloadWhatsAppMedia(mediaId, deps.fetchFn);
   const result = await handleInboundImage({ bytes, products, fetchFn: deps.fetchFn, vision: deps.vision !== undefined ? deps.vision : config.imageVisionEnabled ? (b, ps) => grokVisionMatch(b, ps) : null });
   console.log(`[image-in] whatsapp:${from} matched=${result.product?.product_id || "none"} method=${result.method || "-"} score=${result.score ?? "-"} bytes=${bytes ? "ok" : "none"}`);
   await (deps.sendText ?? ((t) => sendWhatsAppText(phoneNumberId, from, t)))(result.text);
   if (result.product) {
+    setActiveProduct(`whatsapp:${from}`, result.product.product_id, "image");
     await deliverProductMedia({
       media: [{ type: "product_image", product_id: result.product.product_id }],
       products,

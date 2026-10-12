@@ -39,3 +39,47 @@ export function listHandoffs(): { key: string; until: number }[] {
   const now = Date.now();
   return [...handoff.entries()].filter(([, u]) => u > now).map(([key, until]) => ({ key, until }));
 }
+
+// ---- Per-conversation product/conversation state (in-memory, same TTL as history) ----
+export type ConvState = {
+  active_product_id?: string;
+  product_source?: "ad" | "text" | "image" | "ad_ambiguous";
+  shown_product_ids: string[];
+  updated_at: number;
+  [k: string]: unknown;
+};
+const states = new Map<string, ConvState>();
+
+export function getState(key: string, now = Date.now()): ConvState {
+  const s = states.get(key);
+  if (!s || now - s.updated_at > TTL) return { shown_product_ids: [], updated_at: now };
+  return s;
+}
+export function setState(key: string, patch: Partial<ConvState>, now = Date.now()): ConvState {
+  const next = { ...getState(key, now), ...patch, updated_at: now } as ConvState;
+  states.set(key, next);
+  if (states.size > 10000) for (const [k, v] of states) if (now - v.updated_at > TTL) states.delete(k);
+  return next;
+}
+export function setActiveProduct(key: string, productId: string, source: ConvState["product_source"], now = Date.now()): ConvState {
+  const s = getState(key, now);
+  const shown = s.shown_product_ids.includes(productId) ? s.shown_product_ids : [...s.shown_product_ids, productId];
+  return setState(key, { active_product_id: productId, product_source: source, shown_product_ids: shown }, now);
+}
+export function clearState(key: string): void {
+  states.delete(key);
+}
+
+/** Time-windowed message-id dedupe shared by channels (Meta retries). */
+const seenIds = new Map<string, number>();
+export function isDuplicateMessageId(id: string | undefined, now = Date.now(), windowMs = 6 * 3600_000): boolean {
+  if (!id) return false;
+  const at = seenIds.get(id);
+  if (at !== undefined && now - at < windowMs) return true;
+  seenIds.set(id, now);
+  if (seenIds.size > 20000) for (const [k, v] of seenIds) if (now - v > windowMs) seenIds.delete(k);
+  return false;
+}
+export function clearSeenMessageIds(): void {
+  seenIds.clear();
+}
