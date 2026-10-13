@@ -111,5 +111,83 @@ await t("parseOffer: Bangla/Banglish/English amounts", () => {
   assert.equal(parseOffer("1200 na 1300?").ambiguous, true);
 });
 
+
+// ---------- conversation-level (session, tool, guard) ----------
+const { evaluateForConversation, onProductSwitch, getNegotiations, setApprovalRequester, orderUnitPrice, approveNegotiatedPrice } = await import("./pricing/session.js");
+const { setNegotiationLogAppender } = await import("./pricing/logs.js");
+const { enforcePriceGuard, askGrokWithMedia } = await import("./ai/grok.js");
+const { clearState, clearHistory } = await import("./memory.js");
+const logs: (string | number)[][] = []; const approvals: any[] = [];
+setNegotiationLogAppender(async (_r, row) => { logs.push(row); });
+setApprovalRequester(async (p) => { approvals.push(p); });
+const P1 = rp001();
+const P2: Product = { ...rp001({ regular_price: "900", min_sale_price: "800", max_sale_price: "900", max_discount_amount: "100", price_step: "50" }), product_id: "RP-002", product_name: "Mini Clock", price: 900, delivery_inside_dhaka: 80, delivery_outside_dhaka: 150 };
+const ev = (key: string, p: Product, offer: number | null, turn: string, stale = false) => evaluateForConversation({ key, product: p, customerOffer: offer, catalogStale: stale, turnId: turn });
+
+await t("7 multi-product: independent state & limits; switch resets in-progress only", () => {
+  clearState("m:C7");
+  const a = ev("m:C7", P1, 1000, "a1"); const b = ev("m:C7", P2, 500, "b1");
+  assert.equal(a.price_to_quote, 1400); assert.equal(b.price_to_quote, 850);
+  assert.ok(b.price_to_quote >= 800 && a.price_to_quote >= 1300);
+  onProductSwitch("m:C7", "RP-002");
+  assert.equal(getNegotiations("m:C7")["RP-001"], undefined);
+  ev("m:C7", P2, 900, "b2"); onProductSwitch("m:C7", "RP-001");
+  assert.equal(getNegotiations("m:C7")["RP-002"].negotiation_status, "accepted", "agreed deal kept");
+});
+await t("10b duplicate tool call in same turn does not advance or double-log", () => {
+  clearState("m:C10"); const n = logs.length;
+  ev("m:C10", P1, 1000, "same"); const r = ev("m:C10", P1, 1000, "same");
+  assert.equal(r.price_to_quote, 1400); assert.equal(getNegotiations("m:C10")["RP-001"].negotiation_round, 1); assert.equal(logs.length, n + 1);
+});
+await t("9b stale catalog via session: no discount, regular quoted", () => {
+  clearState("m:C9"); const r = ev("m:C9", P1, 1000, "s1", true); assert.equal(r.price_to_quote, 1450);
+});
+await t("11b inconsistent config via session -> regular + config_error log", () => {
+  clearState("m:C11"); const r = ev("m:C11", rp001({ min_sale_price: "1600" }), 1000, "c1");
+  assert.equal(r.decision, "config_error"); assert.equal(r.price_to_quote, 1450); assert.equal(logs.at(-1)![8], "config_error");
+});
+await t("12 human approval: below floor after final -> one approval request; approve in range only", () => {
+  clearState("messenger:C12");
+  ["1","2","3","4","5"].forEach((x) => ev("messenger:C12", P1, 1100, x));
+  assert.equal(approvals.filter((a) => a.customer_id === "C12").length, 1);
+  assert.equal(getNegotiations("messenger:C12")["RP-001"].negotiation_status, "pending_approval");
+  assert.equal(approveNegotiatedPrice("messenger:C12", P1, 1200).ok, false);
+  assert.equal(approveNegotiatedPrice("messenger:C12", P1, 1500).ok, false);
+  assert.equal(approveNegotiatedPrice("messenger:C12", P1, 1300).ok, true);
+  const r = ev("messenger:C12", P1, 1100, "6"); assert.equal(r.decision, "accept"); assert.equal(r.price_to_quote, 1300);
+  assert.equal(orderUnitPrice("messenger:C12", P1).unit_price, 1300);
+});
+await t("Negotiation_Logs rows: 10 columns, hashed id, no PII", () => {
+  const row = logs.at(-1)!; assert.equal(row.length, 10);
+  assert.match(String(row[1]), /^[0-9a-f]{12}$/); assert.ok(!row.join("|").includes("C12"));
+});
+await t("bypass: model invents lower price -> reply replaced by engine/regular", () => {
+  clearState("m:B1");
+  const out = enforcePriceGuard("ঠিক আছে 1100 টাকায় দিয়ে দিচ্ছি", [P1], {}, "m:B1", null, "RP-001");
+  assert.ok(!out.includes("1100") && out.includes("1450"));
+  const e = ev("m:B1", P1, 1000, "x1");
+  const out2 = enforcePriceGuard("ok 1250 taka", [P1], {}, "m:B1", e, "RP-001");
+  assert.ok(out2.includes("1400") && !out2.includes("1250"));
+  assert.equal(enforcePriceGuard("আপনার জন্য 1400 টাকা, ডেলিভারি 80 টাকা, মোট 1480 টাকা", [P1], {}, "m:B1", e), "আপনার জন্য 1400 টাকা, ডেলিভারি 80 টাকা, মোট 1480 টাকা");
+});
+await t("bypass in tool loop: model skips tool and says 1200 -> blocked", async () => {
+  clearState("test:B2"); clearHistory("test:B2");
+  const client = { chat: { completions: { create: async () => ({ choices: [{ message: { role: "assistant", content: "আচ্ছা 1200 টাকায় নিন" } }] }) } } } as any;
+  const r = await askGrokWithMedia({ userMessage: "1200 hobe?", products: [P1], settings: {}, channel: "test", customerId: "B2", client, activeProductId: "RP-001" });
+  assert.ok(!r.text.includes("1200") && r.text.includes("1450"));
+});
+await t("tool loop: evaluate_offer used, model rewording with engine price kept; offer parsed from text", async () => {
+  clearState("test:B3"); clearHistory("test:B3"); let step = 0; let toolOut: any;
+  const client = { chat: { completions: { create: async (req: any) => {
+    step++;
+    if (step === 1) return { choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "e1", type: "function", function: { name: "evaluate_offer", arguments: JSON.stringify({ product_id: "RP-001" }) } }] } }] };
+    toolOut = JSON.parse(req.messages.at(-1).content);
+    return { choices: [{ message: { role: "assistant", content: `ভাই, ${toolOut.price_to_quote} টাকা করতে পারি।` } }] };
+  } } } } as any;
+  const r = await askGrokWithMedia({ userMessage: "baro sho te diben?", products: [P1], settings: {}, channel: "test", customerId: "B3", client, activeProductId: "RP-001" });
+  assert.equal(toolOut.price_to_quote, 1400); assert.ok(r.text.includes("1400"));
+  assert.equal(getNegotiations("test:B3")["RP-001"].customer_offer, 1200);
+});
+
 export function summary() { console.log(`\n${pass} passed, ${fail} failed`); if (fail) process.exit(1); }
 if (process.argv[1]?.endsWith("test-pricing.ts")) summary();

@@ -5,6 +5,8 @@ import { resolveProduct } from "../sheets/products.js";
 import { getState, isHandedOff, pushHistory, setActiveProduct, setState } from "../memory.js";
 import { detectIntent, extractOrderInfo, type IntentGuess } from "./intent.js";
 import { humanSupportReply, requestHuman } from "../support/handoff.js";
+import { onProductSwitch } from "../pricing/session.js";
+import { parseOffer } from "../pricing/parseOffer.js";
 
 export type Channel = "messenger" | "whatsapp";
 
@@ -23,7 +25,7 @@ export function intentNotes(g: IntentGuess, st: { shown_product_ids: string[]; a
   const n: string[] = [`সম্ভাব্য intent: ${g.intent} (আনুমানিক ${Math.round(g.confidence * 100)}%, নিশ্চিত নয়)${g.others.length ? `; অন্য সম্ভাবনা: ${g.others.join(", ")}` : ""}।`];
   switch (g.intent) {
     case "discount_request":
-      n.push("ডিসকাউন্ট/শেষ দাম: শুধু শিটের offer কলাম থেকে বলো; offer খালি হলে বিনয়ের সাথে জানাও দাম ফিক্সড। নিজে কোনো ছাড় বানাবে না।");
+      n.push("ডিসকাউন্ট/শেষ দাম/দরদাম: evaluate_offer টুল কল করো এবং শুধু price_to_quote বলো। শিটের offer কলামের তথ্যও বলতে পারো। নিজে কোনো ছাড় বানাবে না।");
       break;
     case "comparison":
       n.push("তুলনা: শুধু শিটের দাম/বিবরণ/সুবিধা দিয়ে নিরপেক্ষভাবে তুলনা করো; কোনটা ‘সেরা’ দাবি করো না, কাস্টমারের প্রয়োজন জিজ্ঞেস করো।");
@@ -74,6 +76,7 @@ export function applyReferral(channel: Channel, customerId: string, refId: strin
     return null;
   }
   setActiveProduct(key, m.product_id, "ad", now);
+  onProductSwitch(key, m.product_id);
   console.log(`[referral] ${key} ad ${refId} -> ${m.product_id}`);
   return m.product_id;
 }
@@ -85,7 +88,10 @@ export function resolveTurnProduct(channel: Channel, customerId: string, text: s
   const r = resolveProduct(text, catalog.products);
   if (r.kind === "match") {
     const prev = getState(key, now).active_product_id;
-    if (prev !== r.product.product_id) setActiveProduct(key, r.product.product_id, "text", now);
+    if (prev !== r.product.product_id) {
+      setActiveProduct(key, r.product.product_id, "text", now);
+      onProductSwitch(key, r.product.product_id);
+    }
     else setState(key, {}, now);
   } else if (r.kind === "ambiguous") {
     notes.push(
@@ -146,6 +152,9 @@ async function runTurn(params: Parameters<typeof handleCustomerText>[0]): Promis
   const need = nextNeeded(collected, Boolean(turn.activeProductId));
   const st = setState(key, { intent: intent.intent, intent_confidence: intent.confidence, collected, next_needed: need }, now);
   turn.notes.push(...intentNotes(intent, st, catalog));
+  if (intent.intent !== "discount_request" && parseOffer(text).amount !== null && turn.activeProductId && /(dibo|diben|দিব|দিবেন|দেন|hobe|হবে|den|nibo|নিব|offer|অফার|te|e den|ok)/i.test(text)) {
+    turn.notes.push("কাস্টমার সম্ভবত একটা দাম প্রস্তাব করছে — evaluate_offer কল করো (customer_offer সহ)।");
+  }
   if (intent.intent === "order_request" || intent.intent === "purchase_intent" || prevCollected.phone || prevCollected.quantity) {
     turn.notes.push(`অর্ডার তথ্য (আনুমানিক): পরিমাণ=${collected.quantity ?? "?"}, ফোন=${collected.phone ? "পাওয়া গেছে" : "?"}, এলাকা=${collected.delivery_area ?? "?"}। পরের দরকারি তথ্য: ${need}। দরকারি ফিল্ড: ${ORDER_FIELDS.join(", ")}।`);
   }
@@ -158,6 +167,7 @@ async function runTurn(params: Parameters<typeof handleCustomerText>[0]): Promis
     customerId,
     activeProductId: turn.activeProductId,
     contextNotes: turn.notes,
+    catalogStale: catalog.stale,
   });
   return { ...reply, catalog, intent };
 }

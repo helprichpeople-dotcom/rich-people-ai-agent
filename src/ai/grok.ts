@@ -6,8 +6,28 @@ import { createOrder } from "../sheets/orders.js";
 import { requestHuman, humanSupportReply, resolveWhatsAppContact } from "../support/handoff.js";
 import { validateImageUrl, validateProductUrl } from "../media/validate.js";
 import { getHistory, pushHistory, clearHistory, setState } from "../memory.js";
+import { allowedNegotiatedPrices, evaluateForConversation, type EvaluateToolResult } from "../pricing/session.js";
+import { parseOffer } from "../pricing/parseOffer.js";
+import { phrase } from "../pricing/phrases.js";
+import crypto from "node:crypto";
 
 const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "evaluate_offer",
+      description:
+        "MUST be called whenever the customer asks for a discount / lower / last / final price or offers an amount. The shop's pricing engine decides; quote exactly price_to_quote (you may reword phrasing_hint naturally in Bangla). Never state any other discounted price.",
+      parameters: {
+        type: "object",
+        properties: {
+          product_id: { type: "string", description: "product_id from the Products list" },
+          customer_offer: { type: "number", description: "Amount (BDT, per unit) the customer offered, if they named one" },
+        },
+        required: ["product_id"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -79,6 +99,8 @@ type AskParams = {
   activeProductId?: string;
   /** Extra system notes from the pipeline (ambiguity, intent, state). */
   contextNotes?: string[];
+  /** Catalog served from stale cache (Sheets read failed): no new discounts. */
+  catalogStale?: boolean;
 };
 
 /** Backwards-compatible: text only. */
@@ -149,6 +171,8 @@ export async function askGrokWithMedia(params: AskParams): Promise<GrokReply> {
 11) অর্ডারের জন্য কখনো চাপ দিও না; প্রতি উত্তরে সর্বোচ্চ একটি নম্র পরবর্তী ধাপ।
 12) প্রোডাক্টের বাইরের প্রশ্নে সৎভাবে বলো সাহায্য করতে পারবে না; কোনো তথ্য বানাবে না। অভিযোগ/রিফান্ড/মানুষের সাথে কথা বলতে চাইলে request_human কল করো।
 13) কাস্টমারের ব্যক্তিগত তথ্য শুধু অর্ডারের জন্য যা দরকার তাই চাও।
+14) দরদাম/ডিসকাউন্ট/শেষ দাম/কাস্টমার কোনো দাম প্রস্তাব করলে অবশ্যই evaluate_offer টুল কল করো এবং ঠিক price_to_quote সংখ্যাটাই বলো। নিজে কখনো কোনো কম দাম, ছাড় বা "শেষ দাম" বানাবে না। কাস্টমারের প্রস্তাবিত দাম মেনে নিয়েছো এমন বলবে না যতক্ষণ না টুল decision=accept দেয়। দোকানদারের মতো ভদ্র, স্বাভাবিক বাংলায় বলো, প্রতিবার একই বাক্য নয়।
+15) ডেলিভারি চার্জ পুরো অর্ডারে একবারই (যত প্রোডাক্টই হোক)। একাধিক প্রোডাক্ট হলে create_order-এ items দাও।
 
 Settings:
 ${settingsText}
@@ -163,6 +187,8 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
   ];
   pushHistory(memKey, { role: "user", content: params.userMessage });
   let orderPlaced = false;
+  const turnId = crypto.randomUUID();
+  let lastEval: EvaluateToolResult | null = null;
 
   for (let step = 0; step < 4; step++) {
     const completion = await client.chat.completions.create({
@@ -175,9 +201,8 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
     if (!msg) break;
     const calls = msg.tool_calls || [];
     if (!calls.length) {
-      const reply = msg.content?.trim() || "উত্তর তৈরি হয়নি।";
-      const bad = findUnknownPrices(reply, params.products, params.settings);
-      if (bad.length) console.warn(`[price-guard] ${memKey} reply mentions amounts not in Sheet: ${bad.join(",")}`);
+      const reply0 = msg.content?.trim() || "উত্তর তৈরি হয়নি।";
+      const reply = enforcePriceGuard(reply0, params.products, params.settings, memKey, lastEval, params.activeProductId);
       autoAttachIdentifiedProduct(params.userMessage, params.products, media, memKey);
       if (orderPlaced) { clearHistory(memKey); setState(memKey, { collected: {}, next_needed: undefined }); }
       else pushHistory(memKey, { role: "assistant", content: reply });
@@ -208,6 +233,16 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
             whatsapp_link: wa.link,
             message: `Human support notified. Reply in Bangla: tell the customer to call or message Rich People on WhatsApp at ${wa.link} (${wa.number}). Suggested reply: ${humanSupportReply(params.settings)}`,
           };
+        } else if (call.function.name === "evaluate_offer") {
+          const p = params.products.find((x) => x.product_id === String(args.product_id || "").trim());
+          if (!p) result = { ok: false, error: "unknown product_id" };
+          else {
+            const offerArg = Number(args.customer_offer);
+            const parsed = parseOffer(params.userMessage);
+            const offer = Number.isFinite(offerArg) && offerArg > 0 ? offerArg : parsed.amount;
+            lastEval = evaluateForConversation({ key: memKey, product: p, customerOffer: offer, catalogStale: Boolean(params.catalogStale), turnId: `${turnId}:${p.product_id}` });
+            result = lastEval;
+          }
         } else if (call.function.name === "share_product_media") {
           result = runShareProductMedia(String(args.product_id || ""), params.products, media);
         } else {
@@ -312,4 +347,39 @@ export function findUnknownPrices(reply: string, products: Product[], settings: 
     if (Number.isFinite(n) && n > 0 && !known.has(n)) out.push(n);
   }
   return out;
+}
+
+/**
+ * Hard price guard: if the reply states any amount that is not a Sheet price/charge/total and not
+ * an engine-quoted price for this conversation, replace the reply with the engine's template.
+ */
+export function enforcePriceGuard(reply: string, products: Product[], settings: SettingMap, memKey: string, lastEval: EvaluateToolResult | null, activeProductId?: string): string {
+  const allowed = allowedNegotiatedPrices(memKey);
+  const bad = findUnknownPrices(reply, products, settings).filter((n) => !isAllowedAmount(n, allowed, products));
+  if (!bad.length) return reply;
+  console.warn(`[price-guard] ${memKey} blocked reply with unapproved amounts: ${bad.join(",")}`);
+  if (lastEval) return lastEval.phrasing_hint;
+  const p = products.find((x) => x.product_id === activeProductId);
+  if (p) {
+    const regular = Number(p.pricing?.regular_price) || p.price;
+    return phrase("quote", { price: regular, inside: p.delivery_inside_dhaka, outside: p.delivery_outside_dhaka });
+  }
+  return "দাম জানতে কোন প্রোডাক্টটি চান জানাবেন? আমি শিট থেকে সঠিক দাম বলে দিচ্ছি।";
+}
+
+function isAllowedAmount(n: number, allowed: number[], products: Product[]): boolean {
+  const units = new Set<number>(allowed);
+  for (const p of products) { units.add(p.price); const r = Number(p.pricing?.regular_price); if (r > 0) units.add(r); }
+  const lines: number[] = [];
+  for (const u of units) for (let q = 1; q <= 5; q++) lines.push(u * q);
+  const charges = new Set<number>([0]);
+  for (const p of products) { charges.add(p.delivery_inside_dhaka); charges.add(p.delivery_outside_dhaka); }
+  const lineSet = new Set(lines);
+  for (const c of charges) {
+    const x = n - c;
+    if (x <= 0) continue;
+    if (lineSet.has(x)) return true;
+    for (const a of lines) if (a < x && lineSet.has(x - a)) return true; // two-item order totals
+  }
+  return false;
 }
