@@ -42,9 +42,9 @@ export function newNegotiation(cfg: PricingConfig): NegotiationState {
   };
 }
 
-/** Round UP to 10 (seller-favourable), clamp into [floor, regular]. */
+/** Round UP to whole taka (seller-favourable), clamp into [floor, regular]. */
 function clamp(n: number, cfg: PricingConfig): number {
-  const r = Math.ceil(n / 10) * 10;
+  const r = Math.ceil(n);
   return Math.min(cfg.regular, Math.max(cfg.floor, r));
 }
 
@@ -115,7 +115,7 @@ export function evaluateOffer(params: {
   // Final round: accept any offer >= floor; otherwise give floor as final.
   if (isFinal) {
     if (customerOffer !== null && customerOffer >= cfg.floor) {
-      const p = Math.min(current, Math.max(cfg.floor, Math.ceil(customerOffer / 10) * 10));
+      const p = Math.min(current, Math.max(cfg.floor, Math.ceil(customerOffer)));
       s = { ...s, last_counter_offer: p, negotiation_status: "accepted", approved_final_price: p, approved_at: Date.now() };
       return done({ decision: "accept", price: p, is_final: true, status: "accepted", human_needed: false, round, reason: "final round, offer >= floor" });
     }
@@ -126,8 +126,8 @@ export function evaluateOffer(params: {
 
   const counter = Math.min(current, nextCounter(cfg, current, customerOffer, false));
   // Counter met the customer's own offer -> that is an accept at the offer (rounded up).
-  if (customerOffer !== null && counter <= Math.ceil(customerOffer / 10) * 10) {
-    const p = Math.max(cfg.floor, Math.min(current, Math.ceil(customerOffer / 10) * 10));
+  if (customerOffer !== null && counter <= Math.ceil(customerOffer)) {
+    const p = Math.max(cfg.floor, Math.min(current, Math.ceil(customerOffer)));
     s = { ...s, last_counter_offer: p, negotiation_status: "accepted", approved_final_price: p, approved_at: Date.now() };
     return done({ decision: "accept", price: p, is_final: true, status: "accepted", human_needed: false, round, reason: "next step reaches offer" });
   }
@@ -137,10 +137,12 @@ export function evaluateOffer(params: {
 }
 
 function nextCounter(cfg: PricingConfig, current: number, offer: number | null, finalRound: boolean): number {
-  if (finalRound && cfg.mode === "step") return clamp(current - cfg.step, cfg);
-  if (cfg.mode === "split" && offer !== null) return clamp(current - Math.max(10, (current - Math.max(offer, cfg.floor)) / 2), cfg);
-  const step = cfg.step > 0 ? cfg.step : Math.max(10, Math.round((cfg.regular - cfg.floor) / 4 / 10) * 10);
-  return clamp(current - step, cfg);
+  void finalRound;
+  // Step size comes ONLY from the Sheet's price_step (no hardcoded default).
+  if (cfg.mode === "split" && offer !== null) return clamp(current - Math.max(1, (current - Math.max(offer, cfg.floor)) / 2), cfg);
+  if (cfg.step > 0) return clamp(current - cfg.step, cfg);
+  return current; // split mode without price_step and no offer: hold price
+
 }
 
 /** Validate a stored agreed price for ordering. Returns price to charge (agreed if still valid, else regular). */

@@ -49,7 +49,7 @@ export function getPricingConfig(p: Product): ConfigResult {
   if (!(min <= regular && regular <= max)) return fail(`need min<=regular<=max (got ${min}/${regular}/${max})`);
   if (maxDisc !== null && (Number.isNaN(maxDisc) || maxDisc < 0)) return fail("max_discount_amount invalid");
   if (!NEGOTIATION_MODES.includes(mode)) return fail(`negotiation_mode "${mode}" unknown`);
-  if (mode === "step" && (step === null || Number.isNaN(step) || step <= 0)) return fail("price_step must be > 0 for step mode");
+  if (mode === "step" && (step === null || Number.isNaN(step) || step <= 0)) return fail("price_step blank/invalid (must be > 0) for step mode");
   if (step !== null && (Number.isNaN(step) || step < 0)) return fail("price_step invalid");
   const floor = Math.max(min, maxDisc === null ? min : regular - maxDisc);
   return { ok: true, cfg: { ...base, min, max, floor, step: step || 0, mode, enabled: mode !== "fixed" && floor < regular } };

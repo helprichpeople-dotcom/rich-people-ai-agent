@@ -239,5 +239,31 @@ await t("12b admin pending list shows below-floor push; approval clears it", asy
   assert.ok(!listPendingApprovals().some((a) => a.key === "whatsapp:A1"));
 });
 
+await t("blank max_discount_amount -> floor = min_sale_price", () => {
+  const c = cfgOf(rp001({ max_discount_amount: "" })); assert.equal(c.floor, 1300);
+  const { out } = run(c, [1000, 1000, 1000, 1000]); assert.equal(Math.min(...out.map((r) => r.price)), 1300);
+});
+await t("per-product step from Sheet: 30 and 100", () => {
+  const c30 = cfgOf(rp001({ price_step: "30" })); assert.deepEqual(run(c30, [1000, 1000, 1000]).out.map((r) => r.price), [1420, 1390, 1360]);
+  const c100 = cfgOf(rp001({ price_step: "100" })); assert.deepEqual(run(c100, [1000, 1000, 1000]).out.map((r) => r.price), [1350, 1300, 1300]);
+  const odd = cfgOf(rp001({ price_step: "25" })); assert.deepEqual(run(odd, [null, null]).out.map((r) => r.price), [1425, 1400]);
+});
+await t("blank/invalid price_step in step mode -> config issue, regular only (no guessing)", () => {
+  for (const st of ["", "0", "-10", "abc"]) {
+    const r = getPricingConfig(rp001({ price_step: st })); assert.equal(r.ok, false, st); assert.match((r as any).reason, /price_step/);
+  }
+  clearState("m:S0"); const e = ev("m:S0", rp001({ price_step: "" }), 1000, "z");
+  assert.equal(e.decision, "config_error"); assert.equal(e.price_to_quote, 1450);
+});
+await t("catalog warns on blank price_step", async () => {
+  const { setCatalogSource, refreshCatalog } = await import("./sheets/catalog.js");
+  const { REQUIRED_PRODUCT_COLUMNS, PRICING_COLUMNS } = await import("./sheets/products.js");
+  const hdr = [...REQUIRED_PRODUCT_COLUMNS, ...PRICING_COLUMNS] as string[];
+  const row = ["RP-001","Clock","1450","in_stock","","","80","150","","","","","TRUE","1450","1300","1450","TRUE","step","","","x"];
+  setCatalogSource({ productRows: async () => [hdr, row], settings: async () => ({}), adRows: async () => [] });
+  const c = await refreshCatalog(); assert.ok(c.warnings.some((w) => /RP-001.*price_step/.test(w)));
+  setCatalogSource(null);
+});
+
 export function summary() { console.log(`\n${pass} passed, ${fail} failed`); if (fail) process.exit(1); }
 if (process.argv[1]?.endsWith("test-pricing.ts")) summary();
