@@ -189,5 +189,46 @@ await t("tool loop: evaluate_offer used, model rewording with engine price kept;
   assert.equal(getNegotiations("test:B3")["RP-001"].customer_offer, 1200);
 });
 
+// ---------- orders ----------
+const { createOrder, setOrderSheetIO, clearRecentOrders } = await import("./sheets/orders.js");
+const sheet: string[][] = [["order_id","created_at","channel","customer_id","customer_name","phone","address","product_id","product_name","quantity","unit_price","delivery_charge","total","status","note"]];
+let dropWrites = false;
+setOrderSheetIO({ read: async () => sheet.map((r) => [...r]), append: async (_r, row) => { if (!dropWrites) sheet.push(row.map(String)); } });
+const base = { channel: "messenger", customer_id: "O1", customer_name: "A", address: "Dhaka", delivery_area: "inside_dhaka" as const };
+await t("8 delivery total: negotiated 1380 x2 + delivery once (80) = 2840", async () => {
+  clearState("messenger:O1"); clearRecentOrders();
+  ev("messenger:O1", P1, 1380, "o1"); ev("messenger:O1", P1, 1380, "o2");
+  const r = await createOrder({ ...base, phone: "01711111111", product_id: "RP-001", quantity: 2 }, [P1], (p) => orderUnitPrice("messenger:O1", p).unit_price);
+  assert.equal(r.unit_price, 1380); assert.equal(r.delivery_charge, 80); assert.equal(r.total, 2840); assert.equal(r.verified, true);
+  assert.ok(r.unit_price >= MIN);
+  assert.match(sheet.at(-1)![14], /negotiated 1380 \(regular 1450\)/);
+});
+await t("8b multi-item: delivery charged once, per-product prices/limits", async () => {
+  clearState("messenger:O2"); clearRecentOrders();
+  ev("messenger:O2", P2, 850, "p1");
+  const n = sheet.length;
+  const r = await createOrder({ ...base, customer_id: "O2", phone: "01722222222", delivery_area: "outside_dhaka", items: [{ product_id: "RP-001", quantity: 1 }, { product_id: "RP-002", quantity: 2 }] }, [P1, P2], (p) => orderUnitPrice("messenger:O2", p).unit_price);
+  assert.equal(sheet.length, n + 2); assert.equal(r.delivery_charge, 150);
+  assert.equal(r.total, 1450 + 850 * 2 + 150);
+  assert.equal(sheet[n][11], "150"); assert.equal(sheet[n + 1][11], "0");
+  assert.ok(r.items!.every((i) => i.unit_price >= (i.product_id === "RP-001" ? 1300 : 800)));
+});
+await t("order without agreed price uses regular; tampered state ignored", async () => {
+  clearState("messenger:O3"); clearRecentOrders();
+  const r = await createOrder({ ...base, customer_id: "O3", phone: "01733333333", product_id: "RP-001", quantity: 1 }, [P1], (p) => orderUnitPrice("messenger:O3", p).unit_price);
+  assert.equal(r.unit_price, 1450);
+});
+await t("10c duplicate order (same phone+items today) not written twice", async () => {
+  clearRecentOrders(); const n = sheet.length;
+  const r = await createOrder({ ...base, customer_id: "O3", phone: "01733333333", product_id: "RP-001", quantity: 1 }, [P1]);
+  assert.equal(r.duplicate, true); assert.equal(sheet.length, n);
+});
+await t("order write not readable back -> verified=false", async () => {
+  clearRecentOrders(); dropWrites = true;
+  const r = await createOrder({ ...base, customer_id: "O4", phone: "01744444444", product_id: "RP-001", quantity: 1 }, [P1]);
+  assert.equal(r.verified, false); dropWrites = false;
+});
+setOrderSheetIO(null);
+
 export function summary() { console.log(`\n${pass} passed, ${fail} failed`); if (fail) process.exit(1); }
 if (process.argv[1]?.endsWith("test-pricing.ts")) summary();

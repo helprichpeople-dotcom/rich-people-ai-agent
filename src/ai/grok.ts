@@ -6,7 +6,7 @@ import { createOrder } from "../sheets/orders.js";
 import { requestHuman, humanSupportReply, resolveWhatsAppContact } from "../support/handoff.js";
 import { validateImageUrl, validateProductUrl } from "../media/validate.js";
 import { getHistory, pushHistory, clearHistory, setState } from "../memory.js";
-import { allowedNegotiatedPrices, evaluateForConversation, type EvaluateToolResult } from "../pricing/session.js";
+import { allowedNegotiatedPrices, evaluateForConversation, orderUnitPrice, type EvaluateToolResult } from "../pricing/session.js";
 import { parseOffer } from "../pricing/parseOffer.js";
 import { phrase } from "../pricing/phrases.js";
 import crypto from "node:crypto";
@@ -40,12 +40,17 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           customer_name: { type: "string" },
           phone: { type: "string", description: "Bangladeshi mobile number, e.g. 01XXXXXXXXX" },
           address: { type: "string" },
-          product_id: { type: "string", description: "product_id from the Products list" },
+          product_id: { type: "string", description: "product_id (single-item order)" },
           quantity: { type: "integer", minimum: 1 },
+          items: {
+            type: "array",
+            description: "For multi-product orders: one entry per product. Prices are set by the shop system (agreed negotiated price or Sheet price).",
+            items: { type: "object", properties: { product_id: { type: "string" }, quantity: { type: "integer", minimum: 1 } }, required: ["product_id", "quantity"] },
+          },
           delivery_area: { type: "string", enum: ["inside_dhaka", "outside_dhaka"] },
           note: { type: "string" },
         },
-        required: ["customer_name", "phone", "address", "product_id", "quantity", "delivery_area"],
+        required: ["customer_name", "phone", "address", "delivery_area"],
       },
     },
   },
@@ -218,7 +223,7 @@ ${catalog || "(কোনো অ্যাকটিভ প্রোডাক্ট
             console.warn(`[order] ${memKey} create_order blocked: no explicit confirmation after summary`);
             result = { ok: false, error: "NOT_CONFIRMED: first show the full order summary (product, qty, price, delivery charge, total) and ask 'কনফার্ম করবেন?'. Call create_order only after the customer clearly says yes." };
           } else {
-            const r = await createOrder({ ...args, channel, customer_id: customerId }, params.products);
+            const r = await createOrder({ ...args, channel, customer_id: customerId }, params.products, (p) => orderUnitPrice(memKey, p).unit_price);
             result = r.verified === false
               ? { ...r, note: "Row write could not be verified. Do NOT promise the order is saved; say the team will confirm by phone shortly." }
               : r;
