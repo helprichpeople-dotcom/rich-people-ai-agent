@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { appendSheetRow, readSheetValues } from "./client.js";
 import type { Product } from "../types/catalog.js";
+import { getPricingConfig } from "../pricing/config.js";
 
 export type OrderInput = {
   channel: string;
@@ -91,7 +92,8 @@ async function doCreate(input: OrderInput, products: Product[], unitPrice?: Unit
   if (phone.length < 10) throw new Error("Invalid phone number");
   const lines = [...merged.entries()].map(([pid, qty]) => {
     const product = products.find((p) => p.product_id === pid)!;
-    const regular = Number(product.pricing?.regular_price) > 0 ? Number(product.pricing?.regular_price) : product.price;
+    const pc = getPricingConfig(product);
+    const regular = pc.ok ? pc.cfg.regular : pc.regular;
     const unit = unitPrice ? unitPrice(product) : regular;
     if (!(unit > 0)) throw new Error(`Invalid unit price for ${pid}`);
     return { product, qty, unit, regular };

@@ -26,31 +26,38 @@ const num = (s: string | undefined): number | null => {
 };
 
 /**
- * Validates negotiation config. Never guesses: any inconsistency -> ok:false (regular price only).
- * All negotiation columns blank -> disabled (ok:true, enabled:false).
+ * Validates negotiation config. Only min_sale_price + max_sale_price are required.
+ * - min or max blank -> negotiation off (Sheet `price` only).
+ * - negotiation_enabled blank = TRUE; explicit FALSE disables.
+ * - start (regular) = regular_price if given (must be within [min,max]) else max_sale_price.
+ * - mode: explicit, else price_step valid -> "step", price_step blank -> "split".
+ * Any inconsistency -> ok:false (regular price only, warning). Never guesses.
  */
 export function getPricingConfig(p: Product): ConfigResult {
   const pr = p.pricing;
-  const regular = num(pr?.regular_price) ?? p.price;
-  const base = { product_id: p.product_id, regular, notes: pr?.pricing_notes || "" };
-  const enabledRaw = String(pr?.negotiation_enabled || "").trim().toUpperCase();
-  if (!(regular > 0)) return { ok: false, reason: "regular_price invalid", regular: p.price };
-  if (enabledRaw !== "TRUE") {
-    return { ok: true, cfg: { ...base, min: regular, max: regular, floor: regular, step: 0, mode: "fixed", enabled: false } };
-  }
   const min = num(pr?.min_sale_price);
-  const max = num(pr?.max_sale_price) ?? regular;
+  const max = num(pr?.max_sale_price);
+  const regRaw = num(pr?.regular_price);
+  const notes = pr?.pricing_notes || "";
+  const off = (regular: number): ConfigResult => ({ ok: true, cfg: { product_id: p.product_id, regular, notes, min: regular, max: regular, floor: regular, step: 0, mode: "fixed", enabled: false } });
+  const fallbackRegular = regRaw !== null && regRaw > 0 ? regRaw : p.price;
+  if (!(fallbackRegular > 0)) return { ok: false, reason: "price invalid", regular: p.price };
+  if (min === null || max === null) return off(p.price);
+  const fail = (reason: string, regular = fallbackRegular): ConfigResult => ({ ok: false, reason, regular });
+  if (Number.isNaN(min) || min <= 0) return fail("min_sale_price invalid");
+  if (Number.isNaN(max) || max <= 0) return fail("max_sale_price invalid");
+  if (min > max) return fail(`min_sale_price > max_sale_price (${min} > ${max})`);
+  if (regRaw !== null && (Number.isNaN(regRaw) || regRaw < min || regRaw > max)) return fail(`regular_price must be within [${min},${max}]`, p.price);
+  const regular = regRaw !== null ? regRaw : max;
+  if (String(pr?.negotiation_enabled || "").trim().toUpperCase() === "FALSE") return off(regular);
   const maxDisc = num(pr?.max_discount_amount);
   const step = num(pr?.price_step);
-  const mode = String(pr?.negotiation_mode || "").trim().toLowerCase() as NegotiationMode;
-  const fail = (reason: string): ConfigResult => ({ ok: false, reason, regular });
-  if (min === null || Number.isNaN(min) || min <= 0) return fail("min_sale_price missing/invalid");
-  if (Number.isNaN(max) || max <= 0) return fail("max_sale_price invalid");
-  if (!(min <= regular && regular <= max)) return fail(`need min<=regular<=max (got ${min}/${regular}/${max})`);
-  if (maxDisc !== null && (Number.isNaN(maxDisc) || maxDisc < 0)) return fail("max_discount_amount invalid");
-  if (!NEGOTIATION_MODES.includes(mode)) return fail(`negotiation_mode "${mode}" unknown`);
-  if (mode === "step" && (step === null || Number.isNaN(step) || step <= 0)) return fail("price_step blank/invalid (must be > 0) for step mode");
-  if (step !== null && (Number.isNaN(step) || step < 0)) return fail("price_step invalid");
+  if (maxDisc !== null && (Number.isNaN(maxDisc) || maxDisc < 0)) return fail("max_discount_amount invalid", regular);
+  if (step !== null && (Number.isNaN(step) || step <= 0)) return fail("price_step blank/invalid (must be > 0)", regular);
+  const modeRaw = String(pr?.negotiation_mode || "").trim().toLowerCase();
+  const mode = (modeRaw || (step !== null ? "step" : "split")) as NegotiationMode;
+  if (!NEGOTIATION_MODES.includes(mode)) return fail(`negotiation_mode "${modeRaw}" unknown`, regular);
+  if (mode === "step" && step === null) return fail("price_step blank/invalid (must be > 0) for step mode", regular);
   const floor = Math.max(min, maxDisc === null ? min : regular - maxDisc);
-  return { ok: true, cfg: { ...base, min, max, floor, step: step || 0, mode, enabled: mode !== "fixed" && floor < regular } };
+  return { ok: true, cfg: { product_id: p.product_id, regular, notes, min, max, floor, step: step || 0, mode, enabled: mode !== "fixed" && floor < regular } };
 }

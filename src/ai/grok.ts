@@ -8,6 +8,7 @@ import { validateImageUrl, validateProductUrl } from "../media/validate.js";
 import { getHistory, pushHistory, clearHistory, setState } from "../memory.js";
 import { allowedNegotiatedPrices, evaluateForConversation, orderUnitPrice, type EvaluateToolResult } from "../pricing/session.js";
 import { parseOffer } from "../pricing/parseOffer.js";
+import { getPricingConfig } from "../pricing/config.js";
 import { phrase } from "../pricing/phrases.js";
 import crypto from "node:crypto";
 
@@ -366,7 +367,8 @@ export function enforcePriceGuard(reply: string, products: Product[], settings: 
   if (lastEval) return lastEval.phrasing_hint;
   const p = products.find((x) => x.product_id === activeProductId);
   if (p) {
-    const regular = Number(p.pricing?.regular_price) || p.price;
+    const pc = getPricingConfig(p);
+    const regular = pc.ok ? pc.cfg.regular : pc.regular;
     return phrase("quote", { price: regular, inside: p.delivery_inside_dhaka, outside: p.delivery_outside_dhaka });
   }
   return "দাম জানতে কোন প্রোডাক্টটি চান জানাবেন? আমি শিট থেকে সঠিক দাম বলে দিচ্ছি।";
@@ -374,7 +376,7 @@ export function enforcePriceGuard(reply: string, products: Product[], settings: 
 
 function isAllowedAmount(n: number, allowed: number[], products: Product[]): boolean {
   const units = new Set<number>(allowed);
-  for (const p of products) { units.add(p.price); const r = Number(p.pricing?.regular_price); if (r > 0) units.add(r); }
+  for (const p of products) { units.add(p.price); const pc = getPricingConfig(p); units.add(pc.ok ? pc.cfg.regular : pc.regular); }
   const lines: number[] = [];
   for (const u of units) for (let q = 1; q <= 5; q++) lines.push(u * q);
   const charges = new Set<number>([0]);

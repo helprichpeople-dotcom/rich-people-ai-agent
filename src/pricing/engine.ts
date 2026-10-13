@@ -137,12 +137,12 @@ export function evaluateOffer(params: {
 }
 
 function nextCounter(cfg: PricingConfig, current: number, offer: number | null, finalRound: boolean): number {
-  void finalRound;
   // Step size comes ONLY from the Sheet's price_step (no hardcoded default).
-  if (cfg.mode === "split" && offer !== null) return clamp(current - Math.max(1, (current - Math.max(offer, cfg.floor)) / 2), cfg);
-  if (cfg.step > 0) return clamp(current - cfg.step, cfg);
-  return current; // split mode without price_step and no offer: hold price
-
+  if (cfg.mode === "step") return clamp(current - cfg.step, cfg);
+  // split: final round = floor; with offer = ceil midpoint(offer>=floor, last); no number = drop 1/3 of gap to floor.
+  if (finalRound) return cfg.floor;
+  if (offer !== null) return clamp(current - Math.max(1, (current - Math.max(offer, cfg.floor)) / 2), cfg);
+  return clamp(current - (current - cfg.floor) / 3, cfg);
 }
 
 /** Validate a stored agreed price for ordering. Returns price to charge (agreed if still valid, else regular). */

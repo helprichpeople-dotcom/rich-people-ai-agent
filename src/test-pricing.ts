@@ -72,7 +72,7 @@ await t("10 duplicate turn (same turnId) does not advance round", () => {
 });
 await t("11 inconsistent config -> no negotiation, reason given (no guessing)", () => {
   const bad: [Partial<NonNullable<Product["pricing"]>>, RegExp][] = [
-    [{ min_sale_price: "1500" }, /min<=regular/], [{ min_sale_price: "" }, /min_sale_price/], [{ max_sale_price: "1400" }, /min<=regular<=max/],
+    [{ min_sale_price: "1500" }, /min_sale_price > max_sale_price/], [{ max_sale_price: "1400" }, /regular_price must be within/], [{ regular_price: "1200" }, /regular_price must be within/],
     [{ price_step: "0" }, /price_step/], [{ negotiation_mode: "auction" }, /unknown/], [{ max_discount_amount: "-5" }, /max_discount/], [{ min_sale_price: "abc" }, /min_sale_price/],
   ];
   for (const [o, re] of bad) { const r = getPricingConfig(rp001(o)); assert.equal(r.ok, false); assert.match((r as any).reason, re); assert.equal((r as any).regular, 1450); }
@@ -263,6 +263,40 @@ await t("catalog warns on blank price_step", async () => {
   setCatalogSource({ productRows: async () => [hdr, row], settings: async () => ({}), adRows: async () => [] });
   const c = await refreshCatalog(); assert.ok(c.warnings.some((w) => /RP-001.*price_step/.test(w)));
   setCatalogSource(null);
+});
+
+const onlyMinMax = (over: Partial<NonNullable<Product["pricing"]>> = {}) => rp001({ regular_price: "", negotiation_enabled: "", negotiation_mode: "", max_discount_amount: "", price_step: "", pricing_notes: "", ...over });
+await t("only min/max given -> enabled, split mode, start at max", () => {
+  const c = cfgOf(onlyMinMax()); assert.equal(c.enabled, true); assert.equal(c.mode, "split"); assert.equal(c.regular, 1450); assert.equal(c.floor, 1300);
+  assert.deepEqual(run(c, [null, null, null, null]).out.map((r) => r.price), [1400, 1367, 1300, 1300]);
+  assert.deepEqual(run(c, [1000, 1000, 1000]).out.map((r) => r.price), [1375, 1338, 1300]);
+  const r = run(c, [1380, 1380, 1380]).out; assert.deepEqual(r.map((x) => [x.decision, x.price]), [["counter", 1415], ["counter", 1398], ["accept", 1380]]);
+  assert.equal(run(c, [1450]).out[0].price, 1450);
+});
+await t("start = max when regular blank, even if Sheet price differs", () => {
+  const p = { ...onlyMinMax({ max_sale_price: "1500" }), price: 1450 }; const c = cfgOf(p); assert.equal(c.regular, 1500);
+  assert.equal(run(c, [1500]).out[0].price, 1500);
+});
+await t("explicit negotiation_enabled FALSE disables (start price, no discount)", () => {
+  const c = cfgOf(onlyMinMax({ negotiation_enabled: "FALSE" })); assert.equal(c.enabled, false);
+  assert.ok(run(c, [1000, 1000]).out.every((r) => r.price === 1450 && r.decision === "no_negotiation"));
+});
+await t("blank min or blank max -> no negotiation, Sheet price only", () => {
+  for (const o of [{ min_sale_price: "" }, { max_sale_price: "" }]) {
+    const c = cfgOf(onlyMinMax(o)); assert.equal(c.enabled, false); assert.equal(c.regular, 1450);
+    assert.ok(run(c, [900]).out.every((r) => r.price === 1450));
+  }
+});
+await t("price_step given overrides split -> step mode", () => {
+  const c = cfgOf(onlyMinMax({ price_step: "40" })); assert.equal(c.mode, "step");
+  assert.deepEqual(run(c, [1000, 1000, 1000]).out.map((r) => r.price), [1410, 1370, 1330]);
+});
+await t("split fuzz never below min, never increases", () => {
+  const c = cfgOf(onlyMinMax());
+  for (let k = 0; k < 1000; k++) {
+    const { out } = run(c, Array.from({ length: 1 + (k % 5) }, () => (Math.random() < 0.3 ? null : Math.round(Math.random() * 1600))));
+    for (let i = 1; i < out.length; i++) assert.ok(out[i].price <= out[i - 1].price || out[i].decision === "accept");
+  }
 });
 
 export function summary() { console.log(`\n${pass} passed, ${fail} failed`); if (fail) process.exit(1); }
