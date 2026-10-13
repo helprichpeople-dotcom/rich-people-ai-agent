@@ -3,6 +3,7 @@ import { parseProducts } from "./products.js";
 import { readSheetValues } from "./client.js";
 import { loadSettings } from "./settings.js";
 import { loadAdMappingRows, parseAdMapping } from "./adMapping.js";
+import { getPricingConfig } from "../pricing/config.js";
 import { clearImageHashCache } from "../media/match.js";
 import { clearValidateCache } from "../media/validate.js";
 
@@ -51,6 +52,10 @@ async function build(): Promise<Catalog> {
   }
   const ad = parseAdMapping(adRows, products);
   warnings.push(...ad.warnings);
+  for (const p of products) {
+    const pc = getPricingConfig(p);
+    if (!pc.ok) warnings.push(`pricing config ${p.product_id}: ${pc.reason} (negotiation off)`);
+  }
   return { products, settings, adMap: ad.map, warnings, loadedAt: Date.now(), stale: false };
 }
 

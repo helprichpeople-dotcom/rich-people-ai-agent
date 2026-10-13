@@ -24,6 +24,7 @@ export function parseProducts(rows: string[][]): Product[] {
     if (idx(col) < 0) throw new Error(`Products শিটে কলাম নেই: ${col}`);
   }
   const ai = idx("aliases");
+  const opt = (row: string[], c: string) => (idx(c) >= 0 ? String(row[idx(c)] ?? "").trim() : "");
   const get = (row: string[], c: string) => String(row[idx(c)] ?? "").trim();
   return rows
     .slice(1)
@@ -41,10 +42,16 @@ export function parseProducts(rows: string[][]): Product[] {
       offer: get(row, "offer"),
       faq: get(row, "faq"),
       active: toBool(get(row, "active")),
+      pricing: Object.fromEntries(PRICING_COLUMNS.map((c) => [c, opt(row, c)])) as NonNullable<Product["pricing"]>,
       aliases: ai >= 0 ? String(row[ai] ?? "").split(/[,;|]/).map((s) => s.trim()).filter(Boolean) : [],
     }))
     .filter((p) => p.product_id && p.active);
 }
+
+export const PRICING_COLUMNS = [
+  "regular_price", "min_sale_price", "max_sale_price", "negotiation_enabled",
+  "negotiation_mode", "max_discount_amount", "price_step", "pricing_notes",
+] as const;
 
 export async function loadProducts(): Promise<Product[]> {
   return parseProducts(await readSheetValues("Products!A:Z"));

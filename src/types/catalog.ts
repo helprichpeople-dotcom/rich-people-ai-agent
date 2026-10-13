@@ -14,6 +14,17 @@ export type Product = {
   active: boolean;
   /** Optional Products column `aliases` (comma separated). */
   aliases?: string[];
+  /** Optional negotiation columns (raw strings; validated by pricing/config.ts). */
+  pricing?: {
+    regular_price: string;
+    min_sale_price: string;
+    max_sale_price: string;
+    negotiation_enabled: string;
+    negotiation_mode: string;
+    max_discount_amount: string;
+    price_step: string;
+    pricing_notes: string;
+  };
 };
 
 export type AdMapping = { ad_id: string; product_id: string; platform: "messenger" | "whatsapp" | "both"; campaign_name: string };
