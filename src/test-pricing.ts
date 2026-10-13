@@ -230,5 +230,14 @@ await t("order write not readable back -> verified=false", async () => {
 });
 setOrderSheetIO(null);
 
+await t("12b admin pending list shows below-floor push; approval clears it", async () => {
+  const { listPendingApprovals } = await import("./pricing/session.js");
+  clearState("whatsapp:A1");
+  ["1","2","3","4"].forEach((x) => ev("whatsapp:A1", P1, 1000, x));
+  assert.ok(listPendingApprovals().some((a) => a.key === "whatsapp:A1" && a.product_id === "RP-001"));
+  assert.equal(approveNegotiatedPrice("whatsapp:A1", P1, 1350).ok, true);
+  assert.ok(!listPendingApprovals().some((a) => a.key === "whatsapp:A1"));
+});
+
 export function summary() { console.log(`\n${pass} passed, ${fail} failed`); if (fail) process.exit(1); }
 if (process.argv[1]?.endsWith("test-pricing.ts")) summary();

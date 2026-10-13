@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { readSheetValues, updateSheetCell } from "./sheets/client.js";
 import { clearHandoff, listHandoffs } from "./memory.js";
+import { approveNegotiatedPrice, listPendingApprovals } from "./pricing/session.js";
+import { getCatalog } from "./sheets/catalog.js";
 
 const STATUSES = ["pending", "confirmed", "shipped", "cancelled"];
 const COOKIE = "rp_admin";
@@ -164,7 +166,27 @@ adminRouter.get("/support", requireAuth, async (req, res) => {
 <p style="font-size:13px">বট পজ মেমরিতে থাকে; সার্ভার রিস্টার্ট হলে সব পজ মুছে যায়। Pauses are in-memory and also clear on server restart/redeploy.</p>
 ${pausedHtml}
 <form class="card inline" method="post" action="/admin/handoff/clear"><select name="channel"><option>messenger</option><option>whatsapp</option></select><input name="id" placeholder="PSID / phone" required><button>Clear pause / পজ মুছুন</button></form>
+<h3>দাম অনুমোদন / Price approvals</h3>
+${listPendingApprovals().map((a) => `<div class="card row"><span><b>${esc(a.key)}</b> ${esc(a.product_id)} — offer ${esc(a.offer ?? "-")} / last quoted ${esc(a.last_price)}</span></div>`).join("") || `<div class="card">কোনো পেন্ডিং নেই / None pending</div>`}
+<form class="card inline" method="post" action="/admin/negotiation/approve"><select name="channel"><option>messenger</option><option>whatsapp</option></select><input name="id" placeholder="PSID / phone" required><input name="product_id" placeholder="RP-001" required><input name="price" type="number" placeholder="price" required><button>Approve / অনুমোদন</button></form>
+<p style="font-size:13px">অনুমোদিত দাম min–max সীমার মধ্যে হতে হবে; কাস্টমার পরের মেসেজে এই দাম পাবেন (বট নিজে মেসেজ পাঠায় না)। 30 মিনিট বৈধ।</p>
 <h3>Support sheet (latest 50)</h3>${sheetHtml}</main>`));
+});
+
+adminRouter.post("/negotiation/approve", requireAuth, async (req, res) => {
+  const key = `${String(req.body?.channel || "messenger")}:${String(req.body?.id || "").trim()}`;
+  const pid = String(req.body?.product_id || "").trim();
+  const price = Number(req.body?.price);
+  try {
+    const product = (await getCatalog()).products.find((p) => p.product_id === pid);
+    if (!product) throw new Error(`Unknown product ${pid}`);
+    const r = approveNegotiatedPrice(key, product, price);
+    if (!r.ok) throw new Error(r.error);
+    console.log(`[admin] price approved ${pid} ${price}`);
+    res.redirect(`/admin/support?ok=${encodeURIComponent(`Approved ${pid} @ ${price}`)}`);
+  } catch (e) {
+    res.redirect(`/admin/support?ok=${encodeURIComponent("Error: " + (e as Error).message)}`);
+  }
 });
 
 adminRouter.post("/handoff/clear", requireAuth, (req, res) => {

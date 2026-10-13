@@ -1,5 +1,5 @@
 // Per-conversation negotiation state (in-memory, inside ConvState) + glue to engine/logs/approval.
-import { getState, setState } from "../memory.js";
+import { getState, listStates, setState } from "../memory.js";
 import type { Product } from "../types/catalog.js";
 import { getPricingConfig, type PricingConfig } from "./config.js";
 import { evaluateOffer, newNegotiation, priceForOrder, type NegotiationState, type OfferResult } from "./engine.js";
@@ -110,4 +110,14 @@ export function approveNegotiatedPrice(key: string, product: Product, price: num
   saveNeg(key, { ...m, [product.product_id]: { ...st, negotiation_status: "approved", approved_final_price: price, approved_at: now, last_counter_offer: price, last_quoted_price: price, last_result: undefined, last_turn_id: undefined } });
   logNegotiation({ conversation: key, product_id: product.product_id, regular: cfg.regular, offer: st.customer_offer, counter: null, final: price, status: "approved", human_needed: false });
   return { ok: true };
+}
+
+export function listPendingApprovals(): { key: string; product_id: string; offer: number | null; last_price: number }[] {
+  const out: { key: string; product_id: string; offer: number | null; last_price: number }[] = [];
+  for (const [key, st] of listStates()) {
+    for (const n of Object.values((st.negotiation as NegMap) || {})) {
+      if (n.negotiation_status === "pending_approval") out.push({ key, product_id: n.product_id, offer: n.customer_offer, last_price: n.last_quoted_price });
+    }
+  }
+  return out;
 }

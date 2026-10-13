@@ -66,6 +66,9 @@ export function setActiveProduct(key: string, productId: string, source: ConvSta
   const shown = s.shown_product_ids.includes(productId) ? s.shown_product_ids : [...s.shown_product_ids, productId];
   return setState(key, { active_product_id: productId, product_source: source, shown_product_ids: shown }, now);
 }
+export function listStates(now = Date.now()): [string, ConvState][] {
+  return [...states.entries()].filter(([, v]) => now - v.updated_at <= TTL);
+}
 export function clearState(key: string): void {
   states.delete(key);
 }
